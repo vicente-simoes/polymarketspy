@@ -1,6 +1,6 @@
 import { createChildLogger } from "../log/logger.js";
-import { prisma } from "../db/prisma.js";
 import { ingestAllUserTrades, discoverProxyWallets } from "./trades.js";
+import { ingestAllUserActivity } from "./activity.js";
 
 const logger = createChildLogger({ module: "polling" });
 
@@ -21,6 +21,7 @@ let reconcileInterval: NodeJS.Timeout | null = null;
 
 /**
  * Run one polling cycle.
+ * Fetches both trades and activity events for all followed users.
  */
 async function pollCycle(isReconcile = false): Promise<void> {
     const backfillMinutes = isReconcile
@@ -28,7 +29,13 @@ async function pollCycle(isReconcile = false): Promise<void> {
         : undefined;
 
     try {
+        // Ingest trades (BUY/SELL)
         await ingestAllUserTrades({ backfillMinutes });
+
+        // Ingest activity events (MERGE/SPLIT/REDEEM)
+        await ingestAllUserActivity({ backfillMinutes });
+
+        // Discover any new proxy wallets
         await discoverProxyWallets();
     } catch (err) {
         logger.error({ err, isReconcile }, "Polling cycle failed");
@@ -44,6 +51,7 @@ export async function startPolling(): Promise<void> {
     // Initial backfill on startup
     logger.info({ backfillMinutes: BACKFILL_MINUTES }, "Running initial backfill");
     await ingestAllUserTrades({ backfillMinutes: BACKFILL_MINUTES });
+    await ingestAllUserActivity({ backfillMinutes: BACKFILL_MINUTES });
     await discoverProxyWallets();
 
     // Start regular polling

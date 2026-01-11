@@ -6,6 +6,8 @@ import { createChildLogger } from "../log/logger.js";
 import {
     PolymarketTradeSchema,
     type PolymarketTrade,
+    PolymarketActivitySchema,
+    type PolymarketActivity,
     type OrderBook,
     OrderBookSchema,
     type MarketInfo,
@@ -113,6 +115,51 @@ export async function fetchWalletTrades(
         return trades;
     } catch (err) {
         logger.error({ err, wallet: walletAddress }, "Failed to fetch wallet trades");
+        throw err;
+    }
+}
+
+/**
+ * Fetch activity (MERGE/SPLIT/REDEEM) for a wallet address.
+ * Returns activity events sorted by timestamp descending.
+ */
+export async function fetchWalletActivity(
+    walletAddress: string,
+    options?: {
+        limit?: number;
+        after?: string; // ISO timestamp - only activity after this time
+    }
+): Promise<PolymarketActivity[]> {
+    const params: Record<string, string> = {
+        user: walletAddress,
+    };
+
+    if (options?.limit) {
+        params.limit = options.limit.toString();
+    }
+    if (options?.after) {
+        params.after = options.after;
+    }
+
+    try {
+        const activities = await dataApiRequest(
+            "/activity",
+            z.array(PolymarketActivitySchema),
+            params
+        );
+
+        // Filter out TRADE type - we handle those via trades endpoint
+        const nonTradeActivities = activities.filter(
+            (a) => a.type !== "TRADE"
+        );
+
+        logger.debug(
+            { wallet: walletAddress, count: nonTradeActivities.length },
+            "Fetched wallet activity"
+        );
+        return nonTradeActivities;
+    } catch (err) {
+        logger.error({ err, wallet: walletAddress }, "Failed to fetch wallet activity");
         throw err;
     }
 }

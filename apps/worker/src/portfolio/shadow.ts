@@ -1,6 +1,7 @@
-import { PortfolioScope, LedgerEntryType, TradeSide, Prisma } from "@prisma/client";
+import { PortfolioScope, LedgerEntryType, TradeSide, ActivityType, Prisma } from "@prisma/client";
 import { prisma } from "../db/prisma.js";
 import { createChildLogger } from "../log/logger.js";
+import type { ActivityPayload } from "../poly/types.js";
 
 const logger = createChildLogger({ module: "shadow-ledger" });
 
@@ -69,6 +70,261 @@ export async function applyShadowTrade(
             { side: trade.side, shareDelta: shareDeltaMicros.toString(), cashDelta: cashDeltaMicros.toString() },
             "Applied shadow ledger entry"
         );
+    } catch (err) {
+        if (
+            err instanceof Prisma.PrismaClientKnownRequestError &&
+            err.code === "P2002"
+        ) {
+            log.debug("Ledger entry already exists (constraint)");
+            return;
+        }
+        throw err;
+    }
+}
+
+/**
+ * Apply an activity event (MERGE/SPLIT/REDEEM) to the shadow ledger.
+ * Creates ledger entries that exactly mirror the leader's activity.
+ *
+ * MERGE: User burns YES + NO tokens, receives collateral (USDC)
+ *   - For each asset: -shares
+ *   - +cash (collateral amount)
+ *
+ * SPLIT: User burns collateral, receives YES + NO token pairs
+ *   - -cash (collateral amount)
+ *   - For each asset: +shares
+ *
+ * REDEEM: User burns winning tokens, receives collateral
+ *   - For winning asset: -shares
+ *   - +cash
+ */
+export async function applyShadowActivity(
+    activityEventId: string,
+    followedUserId: string
+): Promise<void> {
+    const log = logger.child({ activityEventId, followedUserId });
+
+    // Fetch the activity event
+    const activity = await prisma.activityEvent.findUnique({
+        where: { id: activityEventId },
+    });
+
+    if (!activity) {
+        log.error("Activity event not found");
+        throw new Error(`Activity event not found: ${activityEventId}`);
+    }
+
+    if (!activity.isCanonical) {
+        log.debug("Skipping non-canonical activity");
+        return;
+    }
+
+    const payload = activity.payloadJson as unknown as ActivityPayload;
+    if (!payload || !payload.assets || payload.assets.length === 0) {
+        log.warn("Activity has no asset data, skipping");
+        return;
+    }
+
+    // Determine entry type based on activity type
+    let entryType: LedgerEntryType;
+    switch (activity.type) {
+        case ActivityType.MERGE:
+            entryType = LedgerEntryType.MERGE;
+            break;
+        case ActivityType.SPLIT:
+            entryType = LedgerEntryType.SPLIT;
+            break;
+        case ActivityType.REDEEM:
+            entryType = LedgerEntryType.SETTLEMENT;
+            break;
+        default:
+            log.warn({ type: activity.type }, "Unknown activity type, skipping");
+            return;
+    }
+
+    // Base ref for idempotency
+    const baseRefId = `activity:${activity.id}`;
+
+    try {
+        // Process based on activity type
+        if (activity.type === ActivityType.MERGE) {
+            // MERGE: Burn tokens, receive collateral
+            // Create ledger entry for each asset burned
+            for (const asset of payload.assets) {
+                const shareDeltaMicros = -BigInt(asset.amountMicros); // Negative - burning tokens
+
+                await prisma.ledgerEntry.upsert({
+                    where: {
+                        portfolioScope_refId_entryType: {
+                            portfolioScope: PortfolioScope.SHADOW_USER,
+                            refId: `${baseRefId}:${asset.assetId}`,
+                            entryType,
+                        },
+                    },
+                    create: {
+                        portfolioScope: PortfolioScope.SHADOW_USER,
+                        followedUserId,
+                        marketId: null, // Not always available
+                        assetId: asset.assetId,
+                        entryType,
+                        shareDeltaMicros,
+                        cashDeltaMicros: BigInt(0), // Cash handled separately
+                        priceMicros: null,
+                        refId: `${baseRefId}:${asset.assetId}`,
+                    },
+                    update: {},
+                });
+            }
+
+            // Create ledger entry for collateral received
+            if (payload.collateralAmountMicros) {
+                const cashDeltaMicros = BigInt(payload.collateralAmountMicros);
+                await prisma.ledgerEntry.upsert({
+                    where: {
+                        portfolioScope_refId_entryType: {
+                            portfolioScope: PortfolioScope.SHADOW_USER,
+                            refId: `${baseRefId}:collateral`,
+                            entryType,
+                        },
+                    },
+                    create: {
+                        portfolioScope: PortfolioScope.SHADOW_USER,
+                        followedUserId,
+                        marketId: null,
+                        assetId: null,
+                        entryType,
+                        shareDeltaMicros: BigInt(0),
+                        cashDeltaMicros,
+                        priceMicros: null,
+                        refId: `${baseRefId}:collateral`,
+                    },
+                    update: {},
+                });
+            }
+
+            log.debug(
+                { assetCount: payload.assets.length, collateral: payload.collateralAmountMicros },
+                "Applied MERGE to shadow ledger"
+            );
+        } else if (activity.type === ActivityType.SPLIT) {
+            // SPLIT: Burn collateral, receive tokens
+            // Create ledger entry for collateral burned
+            if (payload.collateralAmountMicros) {
+                const cashDeltaMicros = -BigInt(payload.collateralAmountMicros);
+                await prisma.ledgerEntry.upsert({
+                    where: {
+                        portfolioScope_refId_entryType: {
+                            portfolioScope: PortfolioScope.SHADOW_USER,
+                            refId: `${baseRefId}:collateral`,
+                            entryType,
+                        },
+                    },
+                    create: {
+                        portfolioScope: PortfolioScope.SHADOW_USER,
+                        followedUserId,
+                        marketId: null,
+                        assetId: null,
+                        entryType,
+                        shareDeltaMicros: BigInt(0),
+                        cashDeltaMicros,
+                        priceMicros: null,
+                        refId: `${baseRefId}:collateral`,
+                    },
+                    update: {},
+                });
+            }
+
+            // Create ledger entry for each asset received
+            for (const asset of payload.assets) {
+                const shareDeltaMicros = BigInt(asset.amountMicros); // Positive - receiving tokens
+
+                await prisma.ledgerEntry.upsert({
+                    where: {
+                        portfolioScope_refId_entryType: {
+                            portfolioScope: PortfolioScope.SHADOW_USER,
+                            refId: `${baseRefId}:${asset.assetId}`,
+                            entryType,
+                        },
+                    },
+                    create: {
+                        portfolioScope: PortfolioScope.SHADOW_USER,
+                        followedUserId,
+                        marketId: null,
+                        assetId: asset.assetId,
+                        entryType,
+                        shareDeltaMicros,
+                        cashDeltaMicros: BigInt(0),
+                        priceMicros: null,
+                        refId: `${baseRefId}:${asset.assetId}`,
+                    },
+                    update: {},
+                });
+            }
+
+            log.debug(
+                { assetCount: payload.assets.length, collateral: payload.collateralAmountMicros },
+                "Applied SPLIT to shadow ledger"
+            );
+        } else if (activity.type === ActivityType.REDEEM) {
+            // REDEEM: Burn winning tokens, receive collateral
+            // Similar to MERGE but typically for settled markets
+            for (const asset of payload.assets) {
+                const shareDeltaMicros = -BigInt(asset.amountMicros);
+
+                await prisma.ledgerEntry.upsert({
+                    where: {
+                        portfolioScope_refId_entryType: {
+                            portfolioScope: PortfolioScope.SHADOW_USER,
+                            refId: `${baseRefId}:${asset.assetId}`,
+                            entryType,
+                        },
+                    },
+                    create: {
+                        portfolioScope: PortfolioScope.SHADOW_USER,
+                        followedUserId,
+                        marketId: null,
+                        assetId: asset.assetId,
+                        entryType,
+                        shareDeltaMicros,
+                        cashDeltaMicros: BigInt(0),
+                        priceMicros: null,
+                        refId: `${baseRefId}:${asset.assetId}`,
+                    },
+                    update: {},
+                });
+            }
+
+            // Collateral received from redemption
+            if (payload.collateralAmountMicros) {
+                const cashDeltaMicros = BigInt(payload.collateralAmountMicros);
+                await prisma.ledgerEntry.upsert({
+                    where: {
+                        portfolioScope_refId_entryType: {
+                            portfolioScope: PortfolioScope.SHADOW_USER,
+                            refId: `${baseRefId}:collateral`,
+                            entryType,
+                        },
+                    },
+                    create: {
+                        portfolioScope: PortfolioScope.SHADOW_USER,
+                        followedUserId,
+                        marketId: null,
+                        assetId: null,
+                        entryType,
+                        shareDeltaMicros: BigInt(0),
+                        cashDeltaMicros,
+                        priceMicros: null,
+                        refId: `${baseRefId}:collateral`,
+                    },
+                    update: {},
+                });
+            }
+
+            log.debug(
+                { assetCount: payload.assets.length, collateral: payload.collateralAmountMicros },
+                "Applied REDEEM to shadow ledger"
+            );
+        }
     } catch (err) {
         if (
             err instanceof Prisma.PrismaClientKnownRequestError &&

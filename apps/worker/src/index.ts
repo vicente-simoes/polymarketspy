@@ -4,6 +4,9 @@ import { startHealthServer } from "./health/server.js";
 import { redisConnection } from "./queue/queues.js";
 import { startPolling, stopPolling } from "./ingest/index.js";
 import { startPortfolioWorkers } from "./portfolio/index.js";
+import { startAlchemySubscription, stopAlchemySubscription } from "./alchemy/index.js";
+import { startGroupEventsWorker, startCopyAttemptWorkers, flushAllGroups } from "./simulate/index.js";
+import { startSnapshotLoops, stopSnapshotLoops } from "./snapshot/index.js";
 
 async function main() {
     logger.info("Worker starting...");
@@ -32,11 +35,20 @@ async function main() {
     // Start ingestion polling
     await startPolling();
 
-    // Start portfolio workers (shadow ledger, aggregation)
+    // Start portfolio workers (shadow ledger processing)
     startPortfolioWorkers();
 
-    // TODO: Start Alchemy WebSocket subscription
-    // TODO: Start price refresh loop
+    // Start aggregation worker (event grouping)
+    startGroupEventsWorker();
+
+    // Start copy attempt workers (executable simulation)
+    startCopyAttemptWorkers();
+
+    // Start Alchemy WebSocket subscription (non-canonical trigger)
+    await startAlchemySubscription();
+
+    // Start snapshot loops (price refresh every 30s, portfolio snapshots every minute)
+    startSnapshotLoops();
 
     logger.info("Worker started successfully");
 
@@ -44,6 +56,9 @@ async function main() {
     const shutdown = async () => {
         logger.info("Shutting down...");
         stopPolling();
+        stopSnapshotLoops();
+        await flushAllGroups(); // Flush any pending aggregation groups
+        await stopAlchemySubscription();
         await prisma.$disconnect();
         await redisConnection.quit();
         process.exit(0);

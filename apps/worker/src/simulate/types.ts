@@ -1,0 +1,151 @@
+/**
+ * Types for event aggregation and executable simulation.
+ *
+ * Aggregation groups multiple fills within a 2000ms window into a single
+ * copy attempt to avoid treating many tiny fills as separate orders.
+ */
+
+import { TradeSide, ActivityType } from "@prisma/client";
+
+/**
+ * Aggregation window in milliseconds (per planning.md).
+ */
+export const AGGREGATION_WINDOW_MS = 2000;
+
+/**
+ * Pending event in the aggregation buffer.
+ */
+export interface PendingTradeEvent {
+    type: "trade";
+    tradeEventId: string;
+    followedUserId: string;
+    assetId: string;
+    marketId: string | null;
+    side: TradeSide;
+    priceMicros: number;
+    shareMicros: bigint;
+    notionalMicros: bigint;
+    detectTime: Date;
+    eventTime: Date;
+}
+
+/**
+ * Pending activity event in the aggregation buffer.
+ */
+export interface PendingActivityEvent {
+    type: "activity";
+    activityEventId: string;
+    followedUserId: string;
+    activityType: ActivityType;
+    assetIds: string[];
+    detectTime: Date;
+    eventTime: Date;
+}
+
+/**
+ * Union type for pending events.
+ */
+export type PendingEvent = PendingTradeEvent | PendingActivityEvent;
+
+/**
+ * Aggregated trade group ready for executable simulation.
+ *
+ * Group key format: <followedUserId>:<assetId>:<side>:<windowStartIso>
+ */
+export interface TradeEventGroup {
+    type: "trade";
+    groupKey: string;
+    followedUserId: string;
+    assetId: string;
+    marketId: string | null;
+    side: TradeSide;
+
+    /** Summed notional across all trades in the group (micros). */
+    totalNotionalMicros: bigint;
+
+    /** Summed shares across all trades in the group (micros). */
+    totalShareMicros: bigint;
+
+    /** Volume-weighted average price (their reference price). */
+    vwapPriceMicros: number;
+
+    /** Earliest detect time for FIFO ordering. */
+    earliestDetectTime: Date;
+
+    /** Window start time (bucketed). */
+    windowStart: Date;
+
+    /** Individual trade event IDs in this group. */
+    tradeEventIds: string[];
+}
+
+/**
+ * Aggregated activity group ready for executable simulation.
+ *
+ * Group key format: <followedUserId>:<type>:<sortedAssetIds>:<windowStartIso>
+ */
+export interface ActivityEventGroup {
+    type: "activity";
+    groupKey: string;
+    followedUserId: string;
+    activityType: ActivityType;
+    assetIds: string[];
+
+    /** Earliest detect time for FIFO ordering. */
+    earliestDetectTime: Date;
+
+    /** Window start time (bucketed). */
+    windowStart: Date;
+
+    /** Individual activity event IDs in this group. */
+    activityEventIds: string[];
+}
+
+/**
+ * Union type for event groups.
+ */
+export type EventGroup = TradeEventGroup | ActivityEventGroup;
+
+/**
+ * Job payload for q_group_events queue (trade).
+ */
+export interface GroupTradeJobData {
+    tradeEventId: string;
+    followedUserId: string;
+}
+
+/**
+ * Job payload for q_group_events queue (activity).
+ */
+export interface GroupActivityJobData {
+    activityEventId: string;
+    followedUserId: string;
+    activityType: string;
+}
+
+/**
+ * Union type for group job payloads.
+ */
+export type GroupJobData = GroupTradeJobData | GroupActivityJobData;
+
+/**
+ * Type guard for trade job data.
+ */
+export function isTradeJobData(data: GroupJobData): data is GroupTradeJobData {
+    return "tradeEventId" in data;
+}
+
+/**
+ * Type guard for activity job data.
+ */
+export function isActivityJobData(data: GroupJobData): data is GroupActivityJobData {
+    return "activityEventId" in data;
+}
+
+/**
+ * Job payload for copy attempt queues.
+ */
+export interface CopyAttemptJobData {
+    group: EventGroup;
+    portfolioScope: "EXEC_USER" | "EXEC_GLOBAL";
+}
