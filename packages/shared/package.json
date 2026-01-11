@@ -1,0 +1,16 @@
+{
+    "name": "@copybot/shared",
+    "version": "0.0.1",
+    "private": true,
+    "type": "module",
+    "main": "src/index.ts",
+    "scripts": {
+        "dev": "tsc -w --pretty false",
+        "build": "tsc --pretty false",
+        "lint": "echo ok",
+        "typecheck": "tsc --noEmit"
+    },
+    "dependencies": {
+        "zod": "^3.23.0"
+    }
+}

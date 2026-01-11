@@ -1,0 +1,271 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ConfigScope {
+  GLOBAL
+  USER
+}
+
+enum TradeSide {
+  BUY
+  SELL
+}
+
+enum ActivityType {
+  MERGE
+  SPLIT
+  REDEEM
+}
+
+enum PortfolioScope {
+  SHADOW_USER
+  EXEC_USER
+  EXEC_GLOBAL
+}
+
+enum CopyDecision {
+  EXECUTE
+  SKIP
+}
+
+enum LedgerEntryType {
+  TRADE_FILL
+  MERGE
+  SPLIT
+  FEE
+  MARK
+  SETTLEMENT
+}
+
+model FollowedUser {
+  id            String   @id @default(uuid())
+  label         String
+  profileWallet String   @unique
+  enabled       Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  proxies       FollowedUserProxyWallet[]
+  guardrails    GuardrailConfig[]
+  sizing        CopySizingConfig[]
+  copyAttempts  CopyAttempt[]
+}
+
+model FollowedUserProxyWallet {
+  id            String @id @default(uuid())
+  followedUserId String
+  wallet        String @unique
+
+  followedUser  FollowedUser @relation(fields: [followedUserId], references: [id], onDelete: Cascade)
+
+  @@index([followedUserId])
+}
+
+model GuardrailConfig {
+  id            String      @id @default(uuid())
+  scope         ConfigScope
+  followedUserId String?
+  // stored as JSON; worker materializes effective config
+  configJson     Json
+  updatedAt      DateTime @updatedAt
+
+  followedUser   FollowedUser? @relation(fields: [followedUserId], references: [id], onDelete: Cascade)
+
+  @@index([scope])
+  @@index([followedUserId])
+}
+
+model CopySizingConfig {
+  id            String      @id @default(uuid())
+  scope         ConfigScope
+  followedUserId String?
+  configJson     Json
+  updatedAt      DateTime @updatedAt
+
+  followedUser   FollowedUser? @relation(fields: [followedUserId], references: [id], onDelete: Cascade)
+
+  @@index([scope])
+  @@index([followedUserId])
+}
+
+model Market {
+  id          String   @id // Polymarket market id
+  conditionId String
+  resolvedAt  DateTime?
+  closeTime   DateTime?
+  active      Boolean  @default(true)
+
+  assets      OutcomeAsset[]
+
+  @@index([conditionId])
+  @@index([closeTime])
+}
+
+model OutcomeAsset {
+  id       String @id // asset id
+  marketId String
+  outcome  String
+
+  market   Market @relation(fields: [marketId], references: [id], onDelete: Cascade)
+
+  @@index([marketId])
+}
+
+model TradeEvent {
+  id                   String   @id @default(uuid())
+  // source can be POLYMARKET_API or ALCHEMY
+  source               String
+  sourceId             String?
+  txHash               String?
+  logIndex             Int?
+  isCanonical          Boolean  @default(false)
+
+  profileWallet        String
+  proxyWallet          String?
+
+  marketId             String?
+  assetId              String?
+
+  side                 TradeSide
+  priceMicros          Int      // 0..1_000_000
+  shareMicros          BigInt
+  notionalMicros       BigInt
+  feeMicros            BigInt?
+
+  eventTime            DateTime
+  detectTime           DateTime
+
+  createdAt            DateTime @default(now())
+
+  @@index([profileWallet, eventTime])
+  @@index([proxyWallet, eventTime])
+  @@index([assetId, eventTime])
+  @@unique([source, sourceId])
+  @@unique([txHash, logIndex])
+}
+
+model ActivityEvent {
+  id             String   @id @default(uuid())
+  source         String
+  sourceId       String
+  isCanonical    Boolean  @default(false)
+
+  profileWallet  String
+  proxyWallet    String?
+
+  type           ActivityType
+  // store involved asset ids and amounts in JSON
+  payloadJson    Json
+
+  eventTime      DateTime
+  detectTime     DateTime
+
+  createdAt      DateTime @default(now())
+
+  @@index([profileWallet, eventTime])
+  @@unique([source, sourceId])
+}
+
+model CopyAttempt {
+  id                      String      @id @default(uuid())
+  portfolioScope          PortfolioScope
+  followedUserId          String?
+  groupKey                String      // deterministic key for aggregation group
+
+  decision                CopyDecision
+  reasonCodes             String[]    // non-empty when SKIP
+
+  targetNotionalMicros    BigInt
+  filledNotionalMicros    BigInt      @default(0)
+  vwapPriceMicros         Int?        // set when executed/partial
+  filledRatioBps          Int         @default(0) // 0..10000
+
+  theirReferencePriceMicros Int
+  midPriceMicrosAtDecision Int
+
+  createdAt               DateTime @default(now())
+
+  followedUser            FollowedUser? @relation(fields: [followedUserId], references: [id], onDelete: Cascade)
+  fills                   ExecutableFill[]
+
+  @@index([portfolioScope, createdAt])
+  @@index([followedUserId, createdAt])
+  @@unique([portfolioScope, followedUserId, groupKey])
+}
+
+model ExecutableFill {
+  id                String  @id @default(uuid())
+  copyAttemptId     String
+  filledShareMicros BigInt
+  fillPriceMicros   Int
+  fillNotionalMicros BigInt
+
+  copyAttempt       CopyAttempt @relation(fields: [copyAttemptId], references: [id], onDelete: Cascade)
+
+  @@index([copyAttemptId])
+}
+
+model LedgerEntry {
+  id              String        @id @default(uuid())
+  portfolioScope  PortfolioScope
+  followedUserId  String?
+  marketId        String?
+  assetId         String?
+
+  entryType       LedgerEntryType
+
+  shareDeltaMicros BigInt
+  cashDeltaMicros  BigInt
+  priceMicros      Int?
+
+  refId            String
+  createdAt        DateTime @default(now())
+
+  @@index([portfolioScope, createdAt])
+  @@index([assetId, createdAt])
+  @@unique([portfolioScope, refId, entryType])
+}
+
+model PortfolioSnapshot {
+  id              String        @id @default(uuid())
+  portfolioScope  PortfolioScope
+  followedUserId  String?
+  bucketTime      DateTime      // minute-bucketed timestamp
+
+  equityMicros    BigInt
+  cashMicros      BigInt
+  exposureMicros  BigInt
+  unrealizedPnlMicros BigInt
+  realizedPnlMicros   BigInt
+
+  @@index([portfolioScope, bucketTime])
+  @@index([followedUserId, bucketTime])
+  @@unique([portfolioScope, followedUserId, bucketTime])
+}
+
+model MarketPriceSnapshot {
+  id             String   @id @default(uuid())
+  assetId        String
+  bucketTime     DateTime
+  midpointPriceMicros Int
+
+  @@index([assetId, bucketTime])
+  @@unique([assetId, bucketTime])
+}
+
+model SystemCheckpoint {
+  id            String   @id @default(uuid())
+  key           String   @unique // e.g. "alchemy:lastBlock" or "api:lastTradeTime:<userId>"
+  valueJson     Json
+  updatedAt     DateTime @updatedAt
+}
+
+model AllowedAdminEmail {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  createdAt DateTime @default(now())
+}
