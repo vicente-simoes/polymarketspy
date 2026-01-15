@@ -6,7 +6,7 @@
  * remains the canonical source of truth.
  */
 
-export { startAlchemySubscription, stopAlchemySubscription } from "./subscription.js";
+export { startAlchemySubscription, stopAlchemySubscription, setAlchemyRedisClient } from "./subscription.js";
 export { getLastBlock, setLastBlock } from "./checkpoint.js";
 export type { RawLogEvent, ParsedFillEvent, ReconcileJobData } from "./types.js";
 export { CTF_EXCHANGE_ADDRESS, ORDER_FILLED_TOPIC } from "./types.js";

@@ -11,6 +11,10 @@ const envSchema = z.object({
     DATABASE_URL: z.string().url(),
     REDIS_URL: z.string(),
     ALCHEMY_WS_URL: z.string().url(),
+    ALCHEMY_WS_ENABLED: z
+        .string()
+        .transform((v) => v.toLowerCase() !== "false" && v !== "0")
+        .default("true"),
     POLYMARKET_DATA_API_BASE_URL: z.string().url(),
     POLYMARKET_CLOB_BASE_URL: z.string().url(),
     NODE_ENV: z.enum(["development", "production", "test"]).default("development"),

@@ -159,7 +159,7 @@ export function startReconcileWorker(): void {
         },
         {
             connection: redisConfig,
-            concurrency: 10, // Higher concurrency since batching reduces actual API calls
+            concurrency: 3, // Lower concurrency to reduce parallel API calls
         }
     );
 
@@ -181,7 +181,7 @@ export function startReconcileWorker(): void {
  * Flush any pending batches before shutdown.
  */
 export async function flushPendingReconciles(): Promise<void> {
-    flushAllBatches();
+    await flushAllBatches();
     logger.debug("Flushed pending reconcile batches");
 }
 

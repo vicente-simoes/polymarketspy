@@ -4,10 +4,12 @@ import { startHealthServer } from "./health/server.js";
 import { redisConnection } from "./queue/queues.js";
 import { startPolling, stopPolling } from "./ingest/index.js";
 import { startPortfolioWorkers } from "./portfolio/index.js";
-import { startAlchemySubscription, stopAlchemySubscription } from "./alchemy/index.js";
+import { startAlchemySubscription, stopAlchemySubscription, setAlchemyRedisClient } from "./alchemy/index.js";
 import { startGroupEventsWorker, startCopyAttemptWorkers, flushAllGroups } from "./simulate/index.js";
 import { startSnapshotLoops, stopSnapshotLoops } from "./snapshot/index.js";
 import { startReconcileWorker, stopReconcileWorker, flushPendingReconciles } from "./reconcile/index.js";
+import { loadResolvedTokensFromRedis, setRedisClient } from "./poly/index.js";
+import { env } from "./config/env.js";
 
 async function main() {
     logger.info("Worker starting...");
@@ -30,6 +32,13 @@ async function main() {
         process.exit(1);
     }
 
+    // Set up resolved token cache with Redis persistence
+    setRedisClient(redisConnection);
+    await loadResolvedTokensFromRedis(redisConnection);
+
+    // Set up Alchemy rate limit persistence
+    setAlchemyRedisClient(redisConnection);
+
     // Start health server
     startHealthServer();
 
@@ -46,7 +55,12 @@ async function main() {
     startCopyAttemptWorkers();
 
     // Start Alchemy WebSocket subscription (non-canonical trigger)
-    await startAlchemySubscription();
+    // Can be disabled via ALCHEMY_WS_ENABLED=false for development
+    if (env.ALCHEMY_WS_ENABLED) {
+        await startAlchemySubscription();
+    } else {
+        logger.info("Alchemy WebSocket disabled (ALCHEMY_WS_ENABLED=false)");
+    }
 
     // Start reconcile worker (processes Alchemy-triggered fast fetches)
     startReconcileWorker();
@@ -64,7 +78,9 @@ async function main() {
         await flushAllGroups(); // Flush any pending aggregation groups
         await flushPendingReconciles(); // Flush any pending reconcile batches
         await stopReconcileWorker();
-        await stopAlchemySubscription();
+        if (env.ALCHEMY_WS_ENABLED) {
+            await stopAlchemySubscription();
+        }
         await prisma.$disconnect();
         await redisConnection.quit();
         process.exit(0);

@@ -101,11 +101,19 @@ async function getTrackedWallets(): Promise<Map<string, TrackedWalletInfo>> {
 
 // Reconnection constants
 const INITIAL_BACKOFF_MS = 1000;
-const MAX_BACKOFF_MS = 60000;
+const MAX_BACKOFF_MS = 300_000; // 5 minutes max for normal errors
+const MAX_RATE_LIMIT_BACKOFF_MS = 600_000; // 10 minutes max for rate limits
 const BACKOFF_MULTIPLIER = 2;
+const INITIAL_RATE_LIMIT_BACKOFF_MS = 120_000; // Start with 2 minutes on rate limit
+
+// Track consecutive rate limits for progressive backoff
+let consecutiveRateLimits = 0;
 
 // Reconcile backfill window on reconnect (per spec: 5 minutes)
 const RECONNECT_BACKFILL_MINUTES = 5;
+
+// Redis key for persisting rate limit state across restarts
+const RATE_LIMIT_REDIS_KEY = "alchemy:rate_limit_until";
 
 // Module state
 let provider: WebSocketProvider | null = null;
@@ -113,6 +121,54 @@ let subscriptionId: string | null = null;
 let isRunning = false;
 let currentBackoffMs = INITIAL_BACKOFF_MS;
 let reconnectTimeout: NodeJS.Timeout | null = null;
+
+// Redis client reference (set via setAlchemyRedisClient)
+// Using generic interface compatible with ioredis
+interface RedisLike {
+    get(key: string): Promise<string | null>;
+    setex(key: string, seconds: number, value: string): Promise<string>;
+}
+
+let redisClient: RedisLike | null = null;
+
+/**
+ * Set the Redis client for persisting rate limit state.
+ */
+export function setAlchemyRedisClient(redis: RedisLike): void {
+    redisClient = redis;
+}
+
+/**
+ * Check if we're still within a rate limit backoff period.
+ * Returns the remaining wait time in ms, or 0 if we can connect.
+ */
+async function getRateLimitWaitMs(): Promise<number> {
+    if (!redisClient) return 0;
+    try {
+        const untilStr = await redisClient.get(RATE_LIMIT_REDIS_KEY);
+        if (!untilStr) return 0;
+        const until = parseInt(untilStr, 10);
+        const remaining = until - Date.now();
+        return remaining > 0 ? remaining : 0;
+    } catch {
+        return 0;
+    }
+}
+
+/**
+ * Save rate limit backoff to Redis so it persists across restarts.
+ */
+async function saveRateLimitBackoff(backoffMs: number): Promise<void> {
+    if (!redisClient) return;
+    try {
+        const until = Date.now() + backoffMs;
+        const ttlSeconds = Math.ceil(backoffMs / 1000) + 10;
+        // Use setex for atomic set-with-expiry
+        await redisClient.setex(RATE_LIMIT_REDIS_KEY, ttlSeconds, until.toString());
+    } catch {
+        // Ignore Redis errors for non-critical persistence
+    }
+}
 
 /**
  * Parse a raw log event into a structured fill event.
@@ -390,17 +446,21 @@ function createWebSocket(url: string): Promise<WebSocket> {
  * Create a WebSocketProvider with proper error handling.
  * The ws library emits 'error' on the WebSocket during HTTP upgrade failures (like 429),
  * which must be caught to prevent crashing Node.js.
+ *
+ * Note: We use staticNetwork to prevent ethers from making initialization RPC calls.
+ * Per Alchemy docs, WebSocket connections should be used exclusively for eth_subscribe/eth_unsubscribe.
  */
 async function createProvider(url: string): Promise<WebSocketProvider> {
     // First create the WebSocket with proper error handling
     const ws = await createWebSocket(url);
 
-    // Now create the provider using the established WebSocket
-    // ethers v6 accepts a WebSocket instance
-    const newProvider = new WebSocketProvider(ws as unknown as globalThis.WebSocket);
-
-    // Wait for provider to be ready
-    await newProvider.ready;
+    // Create provider with staticNetwork to prevent initialization RPC calls
+    // Polygon mainnet chainId is 137
+    const newProvider = new WebSocketProvider(
+        ws as unknown as globalThis.WebSocket,
+        { chainId: 137, name: "matic" },  // Static network - no RPC calls
+        { staticNetwork: true }
+    );
 
     return newProvider;
 }
@@ -409,7 +469,12 @@ async function createProvider(url: string): Promise<WebSocketProvider> {
  * Connect to Alchemy WebSocket and set up subscriptions.
  */
 async function connect(): Promise<void> {
-    logger.info("Connecting to Alchemy WebSocket...");
+    // Log URL format (without exposing API key)
+    const urlParts = env.ALCHEMY_WS_URL.split("/");
+    const maskedUrl = urlParts.length > 3
+        ? `${urlParts.slice(0, 3).join("/")}/${urlParts[3]?.slice(0, 4)}...`
+        : "invalid-url-format";
+    logger.info({ urlFormat: maskedUrl, protocol: urlParts[0] }, "Connecting to Alchemy WebSocket...");
 
     try {
         const newProvider = await createProvider(env.ALCHEMY_WS_URL);
@@ -417,7 +482,9 @@ async function connect(): Promise<void> {
         provider = newProvider;
         logger.info("WebSocket connected");
         setWsConnected(true);
-        currentBackoffMs = INITIAL_BACKOFF_MS; // Reset backoff on successful connect
+        // Reset backoff on successful connection
+        currentBackoffMs = INITIAL_BACKOFF_MS;
+        consecutiveRateLimits = 0;
 
         // Add error handler for runtime errors
         provider.on("error", (err: Error) => {
@@ -430,29 +497,29 @@ async function connect(): Promise<void> {
         // Set up subscription
         await setupSubscription();
 
-        // Monitor connection by checking network periodically
-        // The provider will throw when connection is lost
-        const monitorConnection = async () => {
-            if (!isRunning || !provider || provider !== newProvider) return;
-
-            try {
-                await provider.getNetwork();
-                // Connection still alive, check again later
-                setTimeout(monitorConnection, 30000);
-            } catch {
-                logger.warn("WebSocket disconnected (network check failed)");
-                handleDisconnect();
-            }
-        };
-
-        // Start monitoring after a brief delay
-        setTimeout(monitorConnection, 30000);
+        // Note: We do NOT use getNetwork() for health checks.
+        // Per Alchemy docs, WebSocket should only be used for eth_subscribe/eth_unsubscribe.
+        // Connection health is monitored via WebSocket close/error events instead.
+        logger.debug("Connection monitoring via WebSocket events (no RPC polling)");
     } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err);
 
         // Check for rate limiting
         if (errorMessage.includes("429")) {
-            logger.warn({ err: errorMessage }, "Alchemy rate limited (429), will retry with backoff");
+            consecutiveRateLimits++;
+            // Progressive backoff: 2min, 4min, 8min, capped at 10min
+            const rateLimitBackoff = Math.min(
+                INITIAL_RATE_LIMIT_BACKOFF_MS * Math.pow(BACKOFF_MULTIPLIER, consecutiveRateLimits - 1),
+                MAX_RATE_LIMIT_BACKOFF_MS
+            );
+            const backoffMinutes = Math.ceil(rateLimitBackoff / 60000);
+            logger.warn(
+                { err: errorMessage, consecutiveRateLimits, backoffMinutes },
+                `Alchemy rate limited (429), backing off ${backoffMinutes} minutes`
+            );
+            currentBackoffMs = rateLimitBackoff;
+            // Persist to Redis so restarts respect the backoff
+            await saveRateLimitBackoff(rateLimitBackoff);
         } else {
             logger.error({ err: errorMessage }, "Failed to connect to Alchemy WebSocket");
         }
@@ -493,22 +560,30 @@ function handleDisconnect(): void {
 }
 
 /**
- * Schedule a reconnection attempt with exponential backoff.
+ * Schedule a reconnection attempt with exponential backoff and jitter.
  */
 function scheduleReconnect(): void {
     if (reconnectTimeout) {
         clearTimeout(reconnectTimeout);
     }
 
-    logger.info({ backoffMs: currentBackoffMs }, "Scheduling reconnect");
+    // Add jitter: ±10% of backoff to prevent thundering herd
+    const jitter = currentBackoffMs * 0.1 * (Math.random() - 0.5);
+    const actualBackoff = Math.floor(currentBackoffMs + jitter);
+    const backoffSeconds = Math.ceil(actualBackoff / 1000);
+
+    logger.info({ backoffMs: actualBackoff, backoffSeconds }, "Scheduling reconnect");
 
     reconnectTimeout = setTimeout(async () => {
         reconnectTimeout = null;
         await reconnect();
-    }, currentBackoffMs);
+    }, actualBackoff);
 
-    // Increase backoff for next attempt
-    currentBackoffMs = Math.min(currentBackoffMs * BACKOFF_MULTIPLIER, MAX_BACKOFF_MS);
+    // Only increase backoff for non-rate-limit errors
+    // Rate limit backoff is calculated based on consecutiveRateLimits in connect()
+    if (consecutiveRateLimits === 0) {
+        currentBackoffMs = Math.min(currentBackoffMs * BACKOFF_MULTIPLIER, MAX_BACKOFF_MS);
+    }
 }
 
 /**
@@ -540,6 +615,18 @@ export async function startAlchemySubscription(): Promise<void> {
 
     isRunning = true;
     logger.info("Starting Alchemy WebSocket subscription");
+
+    // Check if we're still in a rate limit backoff from a previous run
+    const waitMs = await getRateLimitWaitMs();
+    if (waitMs > 0) {
+        logger.info(
+            { waitMs, waitSec: Math.ceil(waitMs / 1000) },
+            "Respecting rate limit backoff from previous run"
+        );
+        currentBackoffMs = waitMs;
+        scheduleReconnect();
+        return;
+    }
 
     // Log last known block
     const lastBlock = await getLastBlock();

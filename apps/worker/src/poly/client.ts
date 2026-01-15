@@ -1,7 +1,7 @@
 import { request } from "undici";
 import { z } from "zod";
 import { env } from "../config/env.js";
-import { polymarketLimiter } from "../http/limiters.js";
+import { polymarketHighPriorityLimiter, polymarketLowPriorityLimiter } from "../http/limiters.js";
 import { createChildLogger } from "../log/logger.js";
 import {
     PolymarketTradeSchema,
@@ -16,8 +16,80 @@ import {
 
 const logger = createChildLogger({ module: "polymarket-api" });
 
+// Cache of tokens that returned 404 (resolved markets)
+// Map<tokenId, failedAtTimestamp>
+const failedTokenCache = new Map<string, number>();
+const FAILED_TOKEN_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour (resolved markets stay resolved)
+
+// Redis key for persisting resolved tokens across restarts
+const RESOLVED_TOKENS_REDIS_KEY = "polymarket:resolved_tokens";
+
+// In-memory set loaded from Redis on startup
+let resolvedTokensFromRedis = new Set<string>();
+let resolvedTokensLoaded = false;
+
+/**
+ * Load resolved tokens from Redis (call once on startup).
+ */
+export async function loadResolvedTokensFromRedis(redis: { smembers: (key: string) => Promise<string[]> }): Promise<void> {
+    try {
+        const tokens = await redis.smembers(RESOLVED_TOKENS_REDIS_KEY);
+        resolvedTokensFromRedis = new Set(tokens);
+        resolvedTokensLoaded = true;
+        logger.info({ count: tokens.length }, "Loaded resolved tokens from Redis");
+    } catch (err) {
+        logger.warn({ err }, "Failed to load resolved tokens from Redis");
+    }
+}
+
+/**
+ * Save a resolved token to Redis.
+ */
+async function saveResolvedTokenToRedis(tokenId: string, redis?: { sadd: (key: string, value: string) => Promise<number> }): Promise<void> {
+    if (!redis) return;
+    try {
+        await redis.sadd(RESOLVED_TOKENS_REDIS_KEY, tokenId);
+        resolvedTokensFromRedis.add(tokenId);
+    } catch (err) {
+        logger.debug({ err, tokenId }, "Failed to save resolved token to Redis");
+    }
+}
+
+// Redis instance reference (set via setRedisClient)
+let redisClient: { sadd: (key: string, value: string) => Promise<number> } | null = null;
+
+/**
+ * Set the Redis client for persisting resolved tokens.
+ */
+export function setRedisClient(redis: { sadd: (key: string, value: string) => Promise<number> }): void {
+    redisClient = redis;
+}
+
+function isTokenCached(tokenId: string): boolean {
+    // Check Redis-persisted resolved tokens first
+    if (resolvedTokensLoaded && resolvedTokensFromRedis.has(tokenId)) {
+        return true;
+    }
+
+    // Then check in-memory cache
+    const failedAt = failedTokenCache.get(tokenId);
+    if (!failedAt) return false;
+    if (Date.now() - failedAt > FAILED_TOKEN_CACHE_TTL_MS) {
+        failedTokenCache.delete(tokenId);
+        return false;
+    }
+    return true;
+}
+
+function cacheFailedToken(tokenId: string): void {
+    failedTokenCache.set(tokenId, Date.now());
+    // Also persist to Redis for cross-restart durability
+    saveResolvedTokenToRedis(tokenId, redisClient ?? undefined);
+}
+
 /**
  * Make a rate-limited request to Polymarket Data API.
+ * Uses high-priority limiter for time-sensitive trade/activity requests.
  */
 async function dataApiRequest<T>(
     path: string,
@@ -31,8 +103,8 @@ async function dataApiRequest<T>(
         }
     }
 
-    return polymarketLimiter.schedule(async () => {
-        logger.debug({ url: url.toString() }, "Data API request");
+    return polymarketHighPriorityLimiter.schedule(async () => {
+        logger.debug({ url: url.toString() }, "Data API request (high priority)");
         const response = await request(url.toString(), {
             method: "GET",
             headers: { Accept: "application/json" },
@@ -50,6 +122,7 @@ async function dataApiRequest<T>(
 
 /**
  * Make a rate-limited request to Polymarket CLOB API.
+ * Uses low-priority limiter for price/book fetches (not time-sensitive).
  */
 async function clobApiRequest<T>(
     path: string,
@@ -63,8 +136,8 @@ async function clobApiRequest<T>(
         }
     }
 
-    return polymarketLimiter.schedule(async () => {
-        logger.debug({ url: url.toString() }, "CLOB API request");
+    return polymarketLowPriorityLimiter.schedule(async () => {
+        logger.debug({ url: url.toString() }, "CLOB API request (low priority)");
         const response = await request(url.toString(), {
             method: "GET",
             headers: { Accept: "application/json" },
@@ -83,6 +156,9 @@ async function clobApiRequest<T>(
 /**
  * Fetch trades for a wallet address.
  * Returns trades sorted by timestamp descending.
+ *
+ * Uses the 'user' parameter which returns all trades for the user
+ * including those made via proxy wallets.
  */
 export async function fetchWalletTrades(
     walletAddress: string,
@@ -92,7 +168,6 @@ export async function fetchWalletTrades(
     }
 ): Promise<PolymarketTrade[]> {
     const params: Record<string, string> = {
-        maker_address: walletAddress,
         user: walletAddress,
     };
 
@@ -168,8 +243,15 @@ export async function fetchWalletActivity(
 
 /**
  * Fetch order book for a token/asset.
+ * Returns null if the token is cached as failed (resolved market) or returns 404.
  */
-export async function fetchOrderBook(tokenId: string): Promise<OrderBook> {
+export async function fetchOrderBook(tokenId: string): Promise<OrderBook | null> {
+    // Check if token recently failed (resolved market)
+    if (isTokenCached(tokenId)) {
+        logger.debug({ tokenId }, "Skipping cached failed token");
+        return null;
+    }
+
     try {
         const book = await clobApiRequest("/book", OrderBookSchema, {
             token_id: tokenId,
@@ -180,6 +262,12 @@ export async function fetchOrderBook(tokenId: string): Promise<OrderBook> {
         );
         return book;
     } catch (err) {
+        // Cache 404s (resolved markets)
+        if (err instanceof Error && err.message.includes("404")) {
+            cacheFailedToken(tokenId);
+            logger.debug({ tokenId }, "Token orderbook not found, caching");
+            return null;
+        }
         logger.error({ err, tokenId }, "Failed to fetch order book");
         throw err;
     }
@@ -200,7 +288,14 @@ export async function fetchMarketInfo(conditionId: string): Promise<MarketInfo> 
 }
 
 /**
+ * Small delay between price fetches to spread API load
+ * and allow higher-priority requests (trades) to interleave.
+ */
+const PRICE_FETCH_DELAY_MS = 150;
+
+/**
  * Fetch current prices for multiple tokens.
+ * Adds delays between fetches to avoid burst pressure on the rate limiter.
  */
 export async function fetchPrices(
     tokenIds: string[]
@@ -208,10 +303,18 @@ export async function fetchPrices(
     const prices = new Map<string, number>();
 
     // CLOB API allows fetching prices for individual tokens
-    // Batch them if possible, otherwise fetch individually
-    for (const tokenId of tokenIds) {
+    // Fetch individually with delays to spread load
+    for (let i = 0; i < tokenIds.length; i++) {
+        const tokenId = tokenIds[i]!;
+
         try {
             const book = await fetchOrderBook(tokenId);
+
+            // Skip if token is cached as failed (resolved market)
+            if (!book) {
+                continue;
+            }
+
             // Calculate midpoint price
             const bestBid =
                 book.bids.length > 0 ? parseFloat(book.bids[0]!.price) : 0;
@@ -228,7 +331,13 @@ export async function fetchPrices(
                 prices.set(tokenId, 0.5); // Default fallback
             }
         } catch (err) {
-            logger.warn({ err, tokenId }, "Failed to fetch price for token");
+            const errMsg = err instanceof Error ? err.message : String(err);
+            logger.warn({ error: errMsg, tokenId }, "Failed to fetch price for token");
+        }
+
+        // Add delay between fetches to spread load (skip after last item)
+        if (i < tokenIds.length - 1) {
+            await new Promise((resolve) => setTimeout(resolve, PRICE_FETCH_DELAY_MS));
         }
     }
 

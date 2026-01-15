@@ -13,8 +13,11 @@ import { fetchPrices, priceToMicros } from "../poly/client.js";
 
 const logger = createChildLogger({ module: "price-snapshot" });
 
-/** Price refresh interval in milliseconds (30 seconds per spec). */
-const PRICE_REFRESH_INTERVAL_MS = 30_000;
+/** Price refresh interval in milliseconds.
+ * Increased from 30s to 120s to reduce API pressure.
+ * Price accuracy at 2-minute granularity is sufficient for paper trading.
+ */
+const PRICE_REFRESH_INTERVAL_MS = 120_000;
 
 let priceRefreshTimer: ReturnType<typeof setInterval> | null = null;
 

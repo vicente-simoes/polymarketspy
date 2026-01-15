@@ -214,6 +214,11 @@ export async function ingestActivityForUser(
 }
 
 /**
+ * Small delay between wallet fetches to spread API load.
+ */
+const WALLET_FETCH_DELAY_MS = 200;
+
+/**
  * Ingest activity for all enabled followed users.
  */
 export async function ingestAllUserActivity(options?: {
@@ -228,6 +233,8 @@ export async function ingestAllUserActivity(options?: {
     for (const user of users) {
         try {
             await ingestActivityForUser(user.id, user.profileWallet, options);
+            // Small delay between wallets to spread API load
+            await new Promise((resolve) => setTimeout(resolve, WALLET_FETCH_DELAY_MS));
         } catch (err) {
             logger.error(
                 { err, userId: user.id, wallet: user.profileWallet },

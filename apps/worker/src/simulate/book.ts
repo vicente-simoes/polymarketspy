@@ -104,6 +104,13 @@ export async function simulateBookFills(
         // Fetch order book
         const book = await fetchOrderBook(assetId);
 
+        // Check if book exists (null means resolved market or cached failure)
+        if (!book) {
+            result.error = "Order book not available (market may be resolved)";
+            log.warn("Order book not available");
+            return result;
+        }
+
         // Check if book has liquidity
         if (book.bids.length === 0 && book.asks.length === 0) {
             result.error = "Empty order book";

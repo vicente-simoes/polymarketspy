@@ -36,8 +36,8 @@ const MAX_WAIT_MS = 1000;
 // Active batches by wallet address
 const batches = new Map<string, WalletBatch>();
 
-// Callback for when a batch is ready
-type BatchCallback = (walletAddress: string, events: BatchedEvent[]) => void;
+// Callback for when a batch is ready (async supported)
+type BatchCallback = (walletAddress: string, events: BatchedEvent[]) => void | Promise<void>;
 let onBatchReady: BatchCallback | null = null;
 
 /**
@@ -86,7 +86,9 @@ export function addToBatch(event: BatchedEvent): void {
             { wallet: walletAddress, eventCount: batch.events.length, elapsed },
             "Max wait exceeded, flushing batch"
         );
-        flushBatch(normalizedWallet);
+        flushBatch(normalizedWallet).catch((err) => {
+            logger.error({ err, wallet: walletAddress }, "Failed to flush batch on max wait");
+        });
         return;
     }
 
@@ -99,14 +101,16 @@ export function addToBatch(event: BatchedEvent): void {
             { wallet: walletAddress, eventCount: batch!.events.length },
             "Debounce timer fired, flushing batch"
         );
-        flushBatch(normalizedWallet);
+        flushBatch(normalizedWallet).catch((err) => {
+            logger.error({ err, wallet: walletAddress }, "Failed to flush batch on debounce");
+        });
     }, debounceTime);
 }
 
 /**
  * Flush a batch for a specific wallet.
  */
-function flushBatch(normalizedWallet: string): void {
+async function flushBatch(normalizedWallet: string): Promise<void> {
     const batch = batches.get(normalizedWallet);
     if (!batch) return;
 
@@ -124,7 +128,14 @@ function flushBatch(normalizedWallet: string): void {
             { wallet: batch.walletAddress, eventCount: batch.events.length },
             "Batch ready"
         );
-        onBatchReady(batch.walletAddress, batch.events);
+        try {
+            await onBatchReady(batch.walletAddress, batch.events);
+        } catch (err) {
+            logger.error(
+                { err, wallet: batch.walletAddress, eventCount: batch.events.length },
+                "Batch callback failed"
+            );
+        }
     }
 }
 
@@ -132,11 +143,9 @@ function flushBatch(normalizedWallet: string): void {
  * Flush all pending batches immediately.
  * Called during shutdown.
  */
-export function flushAllBatches(): void {
+export async function flushAllBatches(): Promise<void> {
     const wallets = Array.from(batches.keys());
-    for (const wallet of wallets) {
-        flushBatch(wallet);
-    }
+    await Promise.all(wallets.map((wallet) => flushBatch(wallet)));
     logger.debug({ flushedCount: wallets.length }, "Flushed all batches");
 }
 
