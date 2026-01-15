@@ -3,8 +3,6 @@ import { prisma } from "../db/prisma.js";
 import { createChildLogger } from "../log/logger.js";
 import {
     fetchWalletActivity,
-    sharesToMicros,
-    usdcToMicros,
     type PolymarketActivity,
     type ActivityPayload,
 } from "../poly/index.js";
@@ -20,8 +18,9 @@ const SOURCE = "POLYMARKET_API";
 
 /**
  * Map API activity type to DB enum.
+ * Only MERGE, SPLIT, REDEEM are tracked as ActivityEvents.
  */
-function mapActivityType(type: string): ActivityType {
+function mapActivityType(type: string): ActivityType | null {
     switch (type) {
         case "MERGE":
             return ActivityType.MERGE;
@@ -30,8 +29,19 @@ function mapActivityType(type: string): ActivityType {
         case "REDEEM":
             return ActivityType.REDEEM;
         default:
-            throw new Error(`Unknown activity type: ${type}`);
+            // TRADE, REWARD, CONVERSION, MAKER_REBATE are not tracked here
+            return null;
     }
+}
+
+/**
+ * Convert a number to micros (6 decimal places).
+ */
+function toMicros(value: string | number | null | undefined): string {
+    if (value == null) return "0";
+    const numeric = typeof value === "string" ? parseFloat(value) : value;
+    if (!Number.isFinite(numeric)) return "0";
+    return Math.round(numeric * 1_000_000).toString();
 }
 
 /**
@@ -39,38 +49,51 @@ function mapActivityType(type: string): ActivityType {
  */
 function activityToDbData(
     activity: PolymarketActivity,
-    followedUserId: string
+    activityType: ActivityType,
+    profileWallet: string
 ): Prisma.ActivityEventCreateInput {
-    const type = mapActivityType(activity.type);
+    const proxyWallet =
+        activity.proxyWallet && activity.proxyWallet !== profileWallet
+            ? activity.proxyWallet
+            : null;
+    const assets = activity.asset
+        ? [
+              {
+                  assetId: activity.asset,
+                  amountMicros: toMicros(activity.size),
+              },
+          ]
+        : [];
 
-    // Build payload with asset details
+    // Build payload with activity details
     const payload: ActivityPayload = {
-        conditionId: activity.condition_id,
-        marketSlug: activity.market_slug,
-        assets: (activity.assets ?? []).map((asset) => ({
-            assetId: asset.asset_id,
-            amountMicros: sharesToMicros(asset.amount).toString(),
-            outcome: asset.outcome,
-        })),
-        transactionHash: activity.transaction_hash,
+        conditionId: activity.conditionId,
+        marketSlug: activity.slug,
+        marketTitle: activity.title,
+        outcome: activity.outcome,
+        outcomeIndex: activity.outcomeIndex,
+        transactionHash: activity.transactionHash,
+        assets: assets.length > 0 ? assets : undefined,
+        collateralAmountMicros:
+            activity.usdcSize != null ? toMicros(activity.usdcSize) : undefined,
     };
 
-    // Add collateral amount for MERGE events
-    if (activity.collateral_amount) {
-        payload.collateralAmountMicros = usdcToMicros(
-            activity.collateral_amount
-        ).toString();
-    }
+    // Generate sourceId from transaction hash + timestamp + type
+    // This ensures uniqueness per activity event
+    const sourceId = `${activity.transactionHash ?? "unknown"}_${activity.timestamp}_${activity.type}_${activity.asset ?? "unknown"}`;
+
+    // Convert Unix timestamp (seconds) to Date
+    const eventTime = new Date(activity.timestamp * 1000);
 
     return {
         source: SOURCE,
-        sourceId: activity.id,
+        sourceId,
         isCanonical: true,
-        profileWallet: activity.owner,
-        proxyWallet: activity.proxy_wallet ?? null,
-        type,
+        profileWallet,
+        proxyWallet,
+        type: activityType,
         payloadJson: payload as object,
-        eventTime: new Date(activity.timestamp),
+        eventTime,
         detectTime: new Date(),
     };
 }
@@ -95,7 +118,7 @@ export async function ingestActivityForUser(
 
     // Fetch activity from API
     const activities = await fetchWalletActivity(walletAddress, {
-        after: afterTime?.toISOString(),
+        after: afterTime ? Math.floor(afterTime.getTime() / 1000).toString() : undefined,
         limit: 100,
     });
 
@@ -110,32 +133,39 @@ export async function ingestActivityForUser(
     let latestTime: Date | null = null;
 
     for (const activity of activities) {
-        // Skip TRADE type - handled by trade ingestion
-        if (activity.type === "TRADE") {
-            continue;
-        }
-
-        const activityTime = new Date(activity.timestamp);
+        // Convert timestamp to Date (seconds)
+        const activityTime = new Date(activity.timestamp * 1000);
 
         // Track latest activity time for checkpoint
         if (!latestTime || activityTime > latestTime) {
             latestTime = activityTime;
         }
 
+        // Skip TRADE type - handled by trade ingestion
+        if (activity.type === "TRADE") {
+            continue;
+        }
+
+        const activityType = mapActivityType(activity.type);
+        if (!activityType) {
+            log.debug({ type: activity.type }, "Skipping unsupported activity type");
+            continue;
+        }
+
         // Idempotent upsert
         try {
-            const dbData = activityToDbData(activity, userId);
+            const dbData = activityToDbData(activity, activityType, walletAddress);
 
-            // Check if already exists
+            // Check if already exists using the generated sourceId
             const existing = await prisma.activityEvent.findFirst({
                 where: {
                     source: SOURCE,
-                    sourceId: activity.id,
+                    sourceId: dbData.sourceId,
                 },
             });
 
             if (existing) {
-                log.debug({ activityId: activity.id }, "Activity already exists, skipping");
+                log.debug({ sourceId: dbData.sourceId }, "Activity already exists, skipping");
                 continue;
             }
 
@@ -154,7 +184,7 @@ export async function ingestActivityForUser(
             await queues.ingestEvents.add("process-activity", {
                 activityEventId: inserted.id,
                 followedUserId: userId,
-                activityType: activity.type,
+                activityType,
             });
         } catch (err) {
             // Handle unique constraint violations gracefully
@@ -162,7 +192,12 @@ export async function ingestActivityForUser(
                 err instanceof Prisma.PrismaClientKnownRequestError &&
                 err.code === "P2002"
             ) {
-                log.debug({ activityId: activity.id }, "Activity already exists (constraint)");
+                log.debug(
+                    {
+                        sourceId: `${activity.transactionHash ?? "unknown"}_${activity.timestamp}_${activity.type}_${activity.asset ?? "unknown"}`,
+                    },
+                    "Activity already exists (constraint)"
+                );
                 continue;
             }
             throw err;

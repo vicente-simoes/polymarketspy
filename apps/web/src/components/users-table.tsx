@@ -1,0 +1,171 @@
+"use client"
+
+import { ChevronsUpDown, ExternalLink } from 'lucide-react'
+import Link from 'next/link'
+import { useToast } from "@/components/ui/use-toast"
+import { useSWRConfig } from "swr"
+
+interface UserMetrics {
+    shadowEquity: number
+    execEquity: number
+    execRealizedPnl: number
+    execUnrealizedPnl: number
+}
+
+interface User {
+    id: string
+    label: string
+    profileWallet: string
+    enabled: boolean
+    proxies: any[]
+    metrics: UserMetrics
+}
+
+interface UsersTableProps {
+    users: User[]
+}
+
+export function UsersTable({ users }: UsersTableProps) {
+    const { toast } = useToast()
+    const { mutate } = useSWRConfig()
+
+    const formatCurrency = (val: number) => {
+        return new Intl.NumberFormat('en-US', {
+            style: 'currency',
+            currency: 'USD',
+            minimumFractionDigits: 2
+        }).format(val)
+    }
+
+    const formatWallet = (wallet: string) => {
+        return `${wallet.substring(0, 6)}...${wallet.substring(wallet.length - 4)}`
+    }
+
+    const handleToggle = async (userId: string, currentStatus: boolean) => {
+        const newStatus = !currentStatus
+
+        // Optimistic update
+        const updatedUsers = users.map(user =>
+            user.id === userId ? { ...user, enabled: newStatus } : user
+        )
+        mutate("/api/users", updatedUsers, false)
+
+        try {
+            const response = await fetch("/api/users/toggle", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ id: userId, enabled: newStatus }),
+            })
+
+            if (!response.ok) {
+                throw new Error("Failed to update status")
+            }
+
+            const updatedUser = await response.json()
+
+            // Authoritative update: Merge server response into current list
+            const finalUsers = users.map(user =>
+                user.id === userId ? { ...user, enabled: updatedUser.enabled } : user
+            )
+            mutate("/api/users", finalUsers, false) // Commit without revalidation first
+
+            // Eventually consisteny check
+            mutate("/api/users")
+        } catch (error) {
+            // Revert on error
+            mutate("/api/users")
+            toast({
+                variant: "destructive",
+                title: "Error",
+                description: "Failed to update user status",
+            })
+        }
+    }
+
+    return (
+        <div className="bg-[#0D0D0D] rounded-2xl p-6 overflow-x-auto border border-[#27272A]">
+            <table className="w-full">
+                <thead>
+                    <tr className="text-[#919191] text-sm border-b border-[#27272A]">
+                        <th className="pb-4 text-left font-medium pl-2">
+                            <div className="flex items-center gap-1 cursor-pointer hover:text-white transition-colors">
+                                User
+                                <ChevronsUpDown className="h-4 w-4" />
+                            </div>
+                        </th>
+                        <th className="pb-4 text-left font-medium">Wallet</th>
+                        <th className="pb-4 text-center font-medium">Status</th>
+                        <th className="pb-4 text-center font-medium">Shadow Equity</th>
+                        <th className="pb-4 text-center font-medium">Exec Equity</th>
+                        <th className="pb-4 text-center font-medium">Exec PnL</th>
+                        <th className="pb-4 text-right font-medium pr-2">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {users.map((user) => {
+                        const pnl = user.metrics.execRealizedPnl + user.metrics.execUnrealizedPnl
+                        const isProfitable = pnl >= 0
+
+                        return (
+                            <tr
+                                key={user.id}
+                                className="group transition-colors border-b border-[#27272A] last:border-0 hover:bg-[#1A1A1A]"
+                            >
+                                <td className="py-4 pl-2 rounded-l-xl">
+                                    <div className="flex items-center gap-3">
+                                        <div className="h-8 w-8 rounded-full bg-[#1A1A1A] flex items-center justify-center text-[#919191] font-bold text-xs">
+                                            {user.label.substring(0, 2).toUpperCase()}
+                                        </div>
+                                        <a
+                                            href={`https://polymarket.com/@${user.label}`}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="font-bold text-white hover:text-[#86efac] hover:underline transition-all"
+                                        >
+                                            {user.label}
+                                        </a>
+                                    </div>
+                                </td>
+                                <td className="py-4 text-sm text-[#919191] font-mono">
+                                    {formatWallet(user.profileWallet)}
+                                </td>
+                                <td className="py-4 text-center">
+                                    <button
+                                        type="button"
+                                        onClick={() => handleToggle(user.id, user.enabled)}
+                                        className={`px-3 py-1 rounded-full text-[11px] font-semibold transition-colors ${
+                                            user.enabled
+                                                ? "bg-[#86efac] text-black hover:bg-[#4ade80]"
+                                                : "bg-[#2a2a2a] text-[#9b9b9b] hover:bg-[#3a3a3a]"
+                                        }`}
+                                        aria-pressed={user.enabled}
+                                    >
+                                        {user.enabled ? "Active" : "Paused"}
+                                    </button>
+                                </td>
+                                <td className="py-4 text-center text-white font-medium font-mono">
+                                    {formatCurrency(user.metrics.shadowEquity)}
+                                </td>
+                                <td className="py-4 text-center text-white font-medium font-mono">
+                                    {formatCurrency(user.metrics.execEquity)}
+                                </td>
+                                <td className={`py-4 text-center font-medium font-mono ${isProfitable ? 'text-[#86efac]' : 'text-[#EF4444]'}`}>
+                                    {formatCurrency(pnl)}
+                                </td>
+                                <td className="py-4 text-right pr-2 rounded-r-xl">
+                                    <Link
+                                        href={`/users/${user.id}`}
+                                        className="inline-flex items-center justify-end gap-1 text-sm text-[#919191] hover:text-white transition-colors"
+                                    >
+                                        Details
+                                        <ExternalLink className="h-3 w-3" />
+                                    </Link>
+                                </td>
+                            </tr>
+                        )
+                    })}
+                </tbody>
+            </table>
+        </div>
+    )
+}

@@ -82,17 +82,18 @@ async function clobApiRequest<T>(
 
 /**
  * Fetch trades for a wallet address.
- * Returns trades sorted by match_time descending.
+ * Returns trades sorted by timestamp descending.
  */
 export async function fetchWalletTrades(
     walletAddress: string,
     options?: {
         limit?: number;
-        after?: string; // ISO timestamp - only trades after this time
+        after?: string; // Unix timestamp (seconds) - only trades after this time
     }
 ): Promise<PolymarketTrade[]> {
     const params: Record<string, string> = {
         maker_address: walletAddress,
+        user: walletAddress,
     };
 
     if (options?.limit) {
@@ -127,7 +128,7 @@ export async function fetchWalletActivity(
     walletAddress: string,
     options?: {
         limit?: number;
-        after?: string; // ISO timestamp - only activity after this time
+        after?: string; // Unix timestamp (seconds) - only activity after this time
     }
 ): Promise<PolymarketActivity[]> {
     const params: Record<string, string> = {
@@ -157,7 +158,8 @@ export async function fetchWalletActivity(
             { wallet: walletAddress, count: nonTradeActivities.length },
             "Fetched wallet activity"
         );
-        return nonTradeActivities;
+        // Cast needed due to Zod transform type inference limitations
+        return nonTradeActivities as PolymarketActivity[];
     } catch (err) {
         logger.error({ err, wallet: walletAddress }, "Failed to fetch wallet activity");
         throw err;

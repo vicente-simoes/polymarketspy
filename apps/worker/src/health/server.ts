@@ -3,6 +3,20 @@ import { env } from "../config/env.js";
 import { logger } from "../log/logger.js";
 import { getQueueDepths } from "../queue/queues.js";
 import { prisma } from "../db/prisma.js";
+import { getAggregateStats, getPendingBatchCount, getPendingEventCount } from "../reconcile/index.js";
+
+interface LatencyMetrics {
+    p50Ms: number;
+    p95Ms: number;
+    lastEventLagMs: number | null;
+    sampleCount: number;
+}
+
+interface ReconcileMetrics {
+    pendingBatches: number;
+    pendingEvents: number;
+    latency: LatencyMetrics;
+}
 
 interface HealthStatus {
     status: "ok" | "degraded" | "unhealthy";
@@ -11,6 +25,7 @@ interface HealthStatus {
     wsConnected: boolean;
     queueDepths: Record<string, number>;
     dbConnected: boolean;
+    reconcile: ReconcileMetrics;
 }
 
 // Track WS connection state (set by alchemy module)
@@ -36,6 +51,19 @@ async function getHealthStatus(): Promise<HealthStatus> {
 
     const queueDepths = await getQueueDepths();
 
+    // Get reconcile/latency metrics
+    const latencyStats = getAggregateStats();
+    const reconcile: ReconcileMetrics = {
+        pendingBatches: getPendingBatchCount(),
+        pendingEvents: getPendingEventCount(),
+        latency: {
+            p50Ms: latencyStats.totalLag.p50,
+            p95Ms: latencyStats.totalLag.p95,
+            lastEventLagMs: latencyStats.lastEventLagMs,
+            sampleCount: latencyStats.count,
+        },
+    };
+
     // Determine overall status
     let status: "ok" | "degraded" | "unhealthy" = "ok";
     if (!dbConnected) {
@@ -51,6 +79,7 @@ async function getHealthStatus(): Promise<HealthStatus> {
         wsConnected,
         queueDepths,
         dbConnected,
+        reconcile,
     };
 }
 

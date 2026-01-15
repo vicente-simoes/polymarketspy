@@ -1,0 +1,44 @@
+version: '3.8'
+
+# Local development: only db + redis in Docker
+# Web and worker run natively with `pnpm dev` for hot reload
+#
+# Usage:
+#   docker compose -f docker/docker-compose.dev.yml up -d
+#   pnpm dev  (in another terminal)
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: polymarket-db-dev
+    environment:
+      POSTGRES_USER: copybot
+      POSTGRES_PASSWORD: devpassword
+      POSTGRES_DB: copybot
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata-dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U copybot -d copybot"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: polymarket-redis-dev
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata-dev:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata-dev:
+  redisdata-dev:

@@ -142,8 +142,8 @@ export async function applyShadowActivity(
             return;
     }
 
-    // Base ref for idempotency
-    const baseRefId = `activity:${activity.id}`;
+    // Base ref for idempotency (prefer tx hash when available)
+    const baseRefId = `activity:${payload.transactionHash ?? activity.id}`;
 
     try {
         // Process based on activity type

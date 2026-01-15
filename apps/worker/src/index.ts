@@ -7,6 +7,7 @@ import { startPortfolioWorkers } from "./portfolio/index.js";
 import { startAlchemySubscription, stopAlchemySubscription } from "./alchemy/index.js";
 import { startGroupEventsWorker, startCopyAttemptWorkers, flushAllGroups } from "./simulate/index.js";
 import { startSnapshotLoops, stopSnapshotLoops } from "./snapshot/index.js";
+import { startReconcileWorker, stopReconcileWorker, flushPendingReconciles } from "./reconcile/index.js";
 
 async function main() {
     logger.info("Worker starting...");
@@ -47,6 +48,9 @@ async function main() {
     // Start Alchemy WebSocket subscription (non-canonical trigger)
     await startAlchemySubscription();
 
+    // Start reconcile worker (processes Alchemy-triggered fast fetches)
+    startReconcileWorker();
+
     // Start snapshot loops (price refresh every 30s, portfolio snapshots every minute)
     startSnapshotLoops();
 
@@ -58,6 +62,8 @@ async function main() {
         stopPolling();
         stopSnapshotLoops();
         await flushAllGroups(); // Flush any pending aggregation groups
+        await flushPendingReconciles(); // Flush any pending reconcile batches
+        await stopReconcileWorker();
         await stopAlchemySubscription();
         await prisma.$disconnect();
         await redisConnection.quit();

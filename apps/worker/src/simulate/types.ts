@@ -107,6 +107,43 @@ export interface ActivityEventGroup {
 export type EventGroup = TradeEventGroup | ActivityEventGroup;
 
 /**
+ * Serializable trade group for queue payloads (BigInt/Date as strings).
+ */
+export interface QueueTradeEventGroup {
+    type: "trade";
+    groupKey: string;
+    followedUserId: string;
+    assetId: string;
+    marketId: string | null;
+    side: TradeSide;
+    totalNotionalMicros: string;
+    totalShareMicros: string;
+    vwapPriceMicros: number;
+    earliestDetectTime: string;
+    windowStart: string;
+    tradeEventIds: string[];
+}
+
+/**
+ * Serializable activity group for queue payloads (Date as strings).
+ */
+export interface QueueActivityEventGroup {
+    type: "activity";
+    groupKey: string;
+    followedUserId: string;
+    activityType: ActivityType;
+    assetIds: string[];
+    earliestDetectTime: string;
+    windowStart: string;
+    activityEventIds: string[];
+}
+
+/**
+ * Union type for queue-safe event groups.
+ */
+export type QueueEventGroup = QueueTradeEventGroup | QueueActivityEventGroup;
+
+/**
  * Job payload for q_group_events queue (trade).
  */
 export interface GroupTradeJobData {
@@ -146,6 +183,72 @@ export function isActivityJobData(data: GroupJobData): data is GroupActivityJobD
  * Job payload for copy attempt queues.
  */
 export interface CopyAttemptJobData {
-    group: EventGroup;
+    group: QueueEventGroup;
     portfolioScope: "EXEC_USER" | "EXEC_GLOBAL";
+}
+
+/**
+ * Serialize an event group for queue transport.
+ */
+export function serializeEventGroup(group: EventGroup): QueueEventGroup {
+    if (group.type === "trade") {
+        return {
+            type: "trade",
+            groupKey: group.groupKey,
+            followedUserId: group.followedUserId,
+            assetId: group.assetId,
+            marketId: group.marketId,
+            side: group.side,
+            totalNotionalMicros: group.totalNotionalMicros.toString(),
+            totalShareMicros: group.totalShareMicros.toString(),
+            vwapPriceMicros: group.vwapPriceMicros,
+            earliestDetectTime: group.earliestDetectTime.toISOString(),
+            windowStart: group.windowStart.toISOString(),
+            tradeEventIds: group.tradeEventIds,
+        };
+    }
+
+    return {
+        type: "activity",
+        groupKey: group.groupKey,
+        followedUserId: group.followedUserId,
+        activityType: group.activityType,
+        assetIds: group.assetIds,
+        earliestDetectTime: group.earliestDetectTime.toISOString(),
+        windowStart: group.windowStart.toISOString(),
+        activityEventIds: group.activityEventIds,
+    };
+}
+
+/**
+ * Deserialize a queue payload into an in-memory event group.
+ */
+export function deserializeEventGroup(group: QueueEventGroup): EventGroup {
+    if (group.type === "trade") {
+        return {
+            type: "trade",
+            groupKey: group.groupKey,
+            followedUserId: group.followedUserId,
+            assetId: group.assetId,
+            marketId: group.marketId,
+            side: group.side,
+            totalNotionalMicros: BigInt(group.totalNotionalMicros),
+            totalShareMicros: BigInt(group.totalShareMicros),
+            vwapPriceMicros: group.vwapPriceMicros,
+            earliestDetectTime: new Date(group.earliestDetectTime),
+            windowStart: new Date(group.windowStart),
+            tradeEventIds: group.tradeEventIds,
+        };
+    }
+
+    return {
+        type: "activity",
+        groupKey: group.groupKey,
+        followedUserId: group.followedUserId,
+        activityType: group.activityType,
+        assetIds: group.assetIds,
+        earliestDetectTime: new Date(group.earliestDetectTime),
+        windowStart: new Date(group.windowStart),
+        activityEventIds: group.activityEventIds,
+    };
 }

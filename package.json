@@ -12,10 +12,14 @@
     "typecheck": "pnpm -r typecheck",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate deploy",
-    "prisma:studio": "prisma studio"
+    "prisma:migrate:dev": "prisma migrate dev",
+    "prisma:studio": "prisma studio",
+    "prisma:seed": "tsx prisma/seed.ts",
+    "db:setup": "pnpm prisma:migrate:dev && pnpm prisma:seed"
   },
   "devDependencies": {
     "prisma": "^5.22.0",
+    "tsx": "^4.0.0",
     "typescript": "^5.5.0"
   },
   "dependencies": {

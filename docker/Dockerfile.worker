@@ -1,0 +1,76 @@
+# syntax=docker/dockerfile:1
+
+# ============================================
+# Worker Dockerfile - Multi-stage build
+# ============================================
+
+# Stage 1: Base with pnpm
+FROM node:20-alpine AS base
+RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
+WORKDIR /app
+
+# Stage 2: Install dependencies
+FROM base AS deps
+# Copy package files for dependency installation
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/worker/package.json ./apps/worker/
+COPY packages/shared/package.json ./packages/shared/
+
+# Install all dependencies (including devDependencies for build)
+RUN pnpm install --frozen-lockfile
+
+# Stage 3: Build
+FROM base AS builder
+WORKDIR /app
+
+# Copy dependencies from deps stage
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/apps/worker/node_modules ./apps/worker/node_modules
+COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
+
+# Copy source files
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY prisma ./prisma
+COPY packages/shared ./packages/shared
+COPY apps/worker ./apps/worker
+
+# Generate Prisma client
+RUN pnpm prisma generate
+
+# Build shared package first
+RUN pnpm --filter @copybot/shared build
+
+# Build worker
+RUN pnpm --filter @copybot/worker build
+
+# Stage 4: Production runner
+FROM node:20-alpine AS runner
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV LOG_LEVEL=info
+
+# Create non-root user for security
+RUN addgroup --system --gid 1001 nodejs && \
+    adduser --system --uid 1001 worker
+
+# Copy built artifacts
+COPY --from=builder /app/package.json ./
+COPY --from=builder /app/pnpm-workspace.yaml ./
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/apps/worker/dist ./apps/worker/dist
+COPY --from=builder /app/apps/worker/package.json ./apps/worker/
+COPY --from=builder /app/apps/worker/node_modules ./apps/worker/node_modules
+COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
+COPY --from=builder /app/packages/shared/package.json ./packages/shared/
+COPY --from=builder /app/packages/shared/node_modules ./packages/shared/node_modules
+COPY --from=builder /app/prisma ./prisma
+
+# Switch to non-root user
+USER worker
+
+# Health check port
+EXPOSE 8081
+
+# Run the worker
+CMD ["node", "apps/worker/dist/index.js"]

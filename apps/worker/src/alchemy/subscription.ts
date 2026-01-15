@@ -14,6 +14,7 @@
  */
 
 import { WebSocketProvider, AbiCoder, getAddress } from "ethers";
+import WebSocket from "ws";
 import { TradeSide, Prisma } from "@prisma/client";
 import { env } from "../config/env.js";
 import { prisma } from "../db/prisma.js";
@@ -30,6 +31,73 @@ import {
 } from "./types.js";
 
 const logger = createChildLogger({ module: "alchemy-ws" });
+
+type TrackedWalletInfo = {
+    profileWallet: string;
+    isProxy: boolean;
+};
+
+const TRACKED_WALLET_CACHE_TTL_MS = 60_000;
+let trackedWalletsCache = new Map<string, TrackedWalletInfo>();
+let trackedWalletsLoadedAt = 0;
+let trackedWalletsLoadPromise: Promise<Map<string, TrackedWalletInfo>> | null = null;
+
+const normalizeWallet = (wallet: string | null | undefined) =>
+    wallet ? wallet.toLowerCase() : null;
+
+async function loadTrackedWallets(): Promise<Map<string, TrackedWalletInfo>> {
+    const [users, proxies] = await Promise.all([
+        prisma.followedUser.findMany({
+            select: { profileWallet: true },
+        }),
+        prisma.followedUserProxyWallet.findMany({
+            select: {
+                wallet: true,
+                followedUser: { select: { profileWallet: true } },
+            },
+        }),
+    ]);
+
+    const next = new Map<string, TrackedWalletInfo>();
+
+    for (const user of users) {
+        const normalized = normalizeWallet(user.profileWallet);
+        if (!normalized) continue;
+        next.set(normalized, {
+            profileWallet: user.profileWallet,
+            isProxy: false,
+        });
+    }
+
+    for (const proxy of proxies) {
+        const normalized = normalizeWallet(proxy.wallet);
+        const profileWallet = proxy.followedUser?.profileWallet ?? null;
+        if (!normalized || !profileWallet) continue;
+        next.set(normalized, {
+            profileWallet,
+            isProxy: true,
+        });
+    }
+
+    trackedWalletsCache = next;
+    trackedWalletsLoadedAt = Date.now();
+    return trackedWalletsCache;
+}
+
+async function getTrackedWallets(): Promise<Map<string, TrackedWalletInfo>> {
+    const now = Date.now();
+    if (now - trackedWalletsLoadedAt < TRACKED_WALLET_CACHE_TTL_MS) {
+        return trackedWalletsCache;
+    }
+
+    if (!trackedWalletsLoadPromise) {
+        trackedWalletsLoadPromise = loadTrackedWallets().finally(() => {
+            trackedWalletsLoadPromise = null;
+        });
+    }
+
+    return trackedWalletsLoadPromise;
+}
 
 // Reconnection constants
 const INITIAL_BACKOFF_MS = 1000;
@@ -78,17 +146,43 @@ function parseLogEvent(log: RawLogEvent): ParsedFillEvent {
     };
 }
 
+interface AlchemyInsertResult {
+    isNew: boolean;
+    profileWallet: string | null;
+}
+
 /**
  * Insert a non-canonical TradeEvent from an on-chain fill.
- * Returns true if the event was new, false if it already existed.
+ * Returns whether the event was new and the matched profile wallet.
  */
-async function insertAlchemyTradeEvent(event: ParsedFillEvent): Promise<boolean> {
+async function insertAlchemyTradeEvent(event: ParsedFillEvent): Promise<AlchemyInsertResult> {
     const log = logger.child({ txHash: event.txHash, logIndex: event.logIndex });
+
+    const trackedWallets = await getTrackedWallets();
+    const makerKey = normalizeWallet(event.maker);
+    const takerKey = normalizeWallet(event.taker);
+    const makerInfo = makerKey ? trackedWallets.get(makerKey) : undefined;
+    const takerInfo = takerKey ? trackedWallets.get(takerKey) : undefined;
+
+    if (!makerInfo && !takerInfo) {
+        return { isNew: false, profileWallet: null };
+    }
+
+    let matchedInfo = makerInfo ?? takerInfo;
+    let matchedWallet = makerInfo ? event.maker : event.taker;
+
+    if (makerInfo && takerInfo && makerInfo.isProxy && !takerInfo.isProxy) {
+        matchedInfo = takerInfo;
+        matchedWallet = event.taker;
+    }
+
+    const profileWallet = matchedInfo!.profileWallet;
+    const proxyWallet = matchedInfo!.isProxy ? matchedWallet : null;
 
     // Skip removed/reorged events
     if (event.removed) {
         log.debug("Skipping removed event (reorg)");
-        return false;
+        return { isNew: false, profileWallet };
     }
 
     // Check if already exists by txHash + logIndex
@@ -101,7 +195,7 @@ async function insertAlchemyTradeEvent(event: ParsedFillEvent): Promise<boolean>
 
     if (existing) {
         log.debug("Event already exists, skipping");
-        return false;
+        return { isNew: false, profileWallet };
     }
 
     // Determine side: if maker is receiving the asset, they're buying
@@ -131,8 +225,8 @@ async function insertAlchemyTradeEvent(event: ParsedFillEvent): Promise<boolean>
                 txHash: event.txHash,
                 logIndex: event.logIndex,
                 isCanonical: false,
-                profileWallet: event.maker,
-                proxyWallet: null, // Will be resolved via reconcile
+                profileWallet,
+                proxyWallet,
                 marketId: null, // Not available from on-chain event
                 assetId: event.makerAssetId.toString(), // Store as string
                 side,
@@ -145,8 +239,8 @@ async function insertAlchemyTradeEvent(event: ParsedFillEvent): Promise<boolean>
             },
         });
 
-        log.info({ maker: event.maker }, "Inserted Alchemy trade event");
-        return true;
+        log.info({ profileWallet, proxyWallet }, "Inserted Alchemy trade event");
+        return { isNew: true, profileWallet };
     } catch (err) {
         // Handle unique constraint violations gracefully
         if (
@@ -154,7 +248,7 @@ async function insertAlchemyTradeEvent(event: ParsedFillEvent): Promise<boolean>
             err.code === "P2002"
         ) {
             log.debug("Event already exists (constraint)");
-            return false;
+            return { isNew: false, profileWallet };
         }
         throw err;
     }
@@ -166,7 +260,8 @@ async function insertAlchemyTradeEvent(event: ParsedFillEvent): Promise<boolean>
 async function enqueueReconcile(data: ReconcileJobData): Promise<void> {
     await queues.reconcile.add("reconcile", data, {
         // Deduplicate by txHash for event-triggered reconciles
-        jobId: data.txHash ? `reconcile:${data.txHash}` : undefined,
+        // Note: BullMQ doesn't allow colons in job IDs, using underscore separator
+        jobId: data.txHash ? `reconcile_${data.txHash}` : undefined,
     });
     logger.debug({ reason: data.reason }, "Enqueued reconcile job");
 }
@@ -182,17 +277,17 @@ async function handleLogEvent(log: RawLogEvent): Promise<void> {
         eventLogger.debug({ blockNumber: parsed.blockNumber }, "Received fill event");
 
         // Insert non-canonical event
-        const isNew = await insertAlchemyTradeEvent(parsed);
+        const result = await insertAlchemyTradeEvent(parsed);
 
         // Update checkpoint
         await setLastBlock(parsed.blockNumber);
 
-        // Enqueue reconcile if this is a new event
-        if (isNew) {
+        // Enqueue reconcile if this is a new event for a tracked wallet
+        if (result.isNew && result.profileWallet) {
             await enqueueReconcile({
                 reason: "alchemy_event",
                 txHash: parsed.txHash,
-                walletAddress: parsed.maker,
+                walletAddress: result.profileWallet,
                 triggeredAt: new Date().toISOString(),
             });
         }
@@ -239,33 +334,106 @@ async function setupSubscription(): Promise<void> {
 }
 
 /**
+ * Create a WebSocket connection with proper error handling.
+ * This creates the WebSocket FIRST with error handlers attached,
+ * preventing unhandled 'error' events from crashing Node.js.
+ */
+function createWebSocket(url: string): Promise<WebSocket> {
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        let ws: WebSocket | null = null;
+
+        const settle = (fn: () => void) => {
+            if (!settled) {
+                settled = true;
+                fn();
+            }
+        };
+
+        const onError = (err: Error) => {
+            settle(() => {
+                if (ws) {
+                    ws.removeAllListeners();
+                    ws.close();
+                }
+                reject(err);
+            });
+        };
+
+        const onOpen = () => {
+            settle(() => {
+                ws!.removeListener("error", onError);
+                ws!.removeListener("open", onOpen);
+                resolve(ws!);
+            });
+        };
+
+        // Create WebSocket with error handler attached immediately
+        ws = new WebSocket(url);
+        ws.on("error", onError);
+        ws.on("open", onOpen);
+
+        // Connection timeout
+        setTimeout(() => {
+            settle(() => {
+                if (ws) {
+                    ws.removeAllListeners();
+                    ws.close();
+                }
+                reject(new Error("WebSocket connection timeout after 30s"));
+            });
+        }, 30000);
+    });
+}
+
+/**
+ * Create a WebSocketProvider with proper error handling.
+ * The ws library emits 'error' on the WebSocket during HTTP upgrade failures (like 429),
+ * which must be caught to prevent crashing Node.js.
+ */
+async function createProvider(url: string): Promise<WebSocketProvider> {
+    // First create the WebSocket with proper error handling
+    const ws = await createWebSocket(url);
+
+    // Now create the provider using the established WebSocket
+    // ethers v6 accepts a WebSocket instance
+    const newProvider = new WebSocketProvider(ws as unknown as globalThis.WebSocket);
+
+    // Wait for provider to be ready
+    await newProvider.ready;
+
+    return newProvider;
+}
+
+/**
  * Connect to Alchemy WebSocket and set up subscriptions.
  */
 async function connect(): Promise<void> {
     logger.info("Connecting to Alchemy WebSocket...");
 
     try {
-        provider = new WebSocketProvider(env.ALCHEMY_WS_URL);
+        const newProvider = await createProvider(env.ALCHEMY_WS_URL);
 
-        // Wait for connection to be ready
-        await provider.ready;
-
+        provider = newProvider;
         logger.info("WebSocket connected");
         setWsConnected(true);
         currentBackoffMs = INITIAL_BACKOFF_MS; // Reset backoff on successful connect
 
-        // Set up subscription
-        await setupSubscription();
-
-        // Handle provider errors - ethers v6 emits 'error' on the provider itself
+        // Add error handler for runtime errors
         provider.on("error", (err: Error) => {
             logger.error({ err: err.message }, "Provider error");
+            if (isRunning && provider === newProvider) {
+                handleDisconnect();
+            }
         });
+
+        // Set up subscription
+        await setupSubscription();
 
         // Monitor connection by checking network periodically
         // The provider will throw when connection is lost
         const monitorConnection = async () => {
-            if (!isRunning || !provider) return;
+            if (!isRunning || !provider || provider !== newProvider) return;
 
             try {
                 await provider.getNetwork();
@@ -280,9 +448,27 @@ async function connect(): Promise<void> {
         // Start monitoring after a brief delay
         setTimeout(monitorConnection, 30000);
     } catch (err) {
-        logger.error({ err }, "Failed to connect to Alchemy WebSocket");
+        const errorMessage = err instanceof Error ? err.message : String(err);
+
+        // Check for rate limiting
+        if (errorMessage.includes("429")) {
+            logger.warn({ err: errorMessage }, "Alchemy rate limited (429), will retry with backoff");
+        } else {
+            logger.error({ err: errorMessage }, "Failed to connect to Alchemy WebSocket");
+        }
+
         setWsConnected(false);
-        provider = null;
+
+        // Clean up any partially created provider
+        if (provider) {
+            try {
+                provider.removeAllListeners();
+                await provider.destroy();
+            } catch {
+                // Ignore cleanup errors
+            }
+            provider = null;
+        }
 
         if (isRunning) {
             scheduleReconnect();

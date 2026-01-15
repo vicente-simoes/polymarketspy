@@ -1,0 +1,102 @@
+version: '3.8'
+
+# Full stack local testing (all in Docker, no TLS)
+# Use this to test the complete setup before deploying to production
+#
+# Usage:
+#   docker compose -f docker/docker-compose.local.yml up --build
+#
+# Access: http://localhost
+
+services:
+  # ============================================
+  # Database
+  # ============================================
+  db:
+    image: postgres:16-alpine
+    container_name: polymarket-db-local
+    environment:
+      POSTGRES_USER: copybot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-localdevpassword}
+      POSTGRES_DB: copybot
+    volumes:
+      - pgdata-local:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U copybot -d copybot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================
+  # Redis
+  # ============================================
+  redis:
+    image: redis:7-alpine
+    container_name: polymarket-redis-local
+    command: redis-server /usr/local/etc/redis/redis.conf --requirepass ${REDIS_PASSWORD:-localredispassword}
+    volumes:
+      - redisdata-local:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-localredispassword}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================
+  # Worker
+  # ============================================
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.worker
+    container_name: polymarket-worker-local
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      DATABASE_URL: postgresql://copybot:${POSTGRES_PASSWORD:-localdevpassword}@db:5432/copybot?schema=public
+      REDIS_URL: redis://:${REDIS_PASSWORD:-localredispassword}@redis:6379
+      ALCHEMY_WS_URL: ${ALCHEMY_WS_URL}
+      POLYMARKET_DATA_API_BASE_URL: ${POLYMARKET_DATA_API_BASE_URL:-https://data-api.polymarket.com}
+      POLYMARKET_CLOB_BASE_URL: ${POLYMARKET_CLOB_BASE_URL:-https://clob.polymarket.com}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ============================================
+  # Web
+  # ============================================
+  web:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.web
+    container_name: polymarket-web-local
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://copybot:${POSTGRES_PASSWORD:-localdevpassword}@db:5432/copybot?schema=public
+      NEXTAUTH_URL: http://localhost
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-localsecretatleast32charslong!!}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # ============================================
+  # Nginx (no TLS for local)
+  # ============================================
+  nginx:
+    image: nginx:alpine
+    container_name: polymarket-nginx-local
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.local.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - web
+
+volumes:
+  pgdata-local:
+  redisdata-local:

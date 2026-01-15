@@ -1,3 +1,5 @@
 .secrets
 node_modules/
 apps/worker/dist/
+template/
+.env

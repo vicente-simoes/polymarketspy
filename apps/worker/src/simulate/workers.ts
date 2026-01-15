@@ -11,7 +11,8 @@ import { createChildLogger } from "../log/logger.js";
 import { createWorker, QUEUE_NAMES } from "../queue/queues.js";
 import { queues } from "../queue/queues.js";
 import { executeCopyAttempt } from "./executor.js";
-import type { CopyAttemptJobData, EventGroup } from "./types.js";
+import { deserializeEventGroup } from "./types.js";
+import type { CopyAttemptJobData } from "./types.js";
 
 const logger = createChildLogger({ module: "copy-workers" });
 
@@ -22,7 +23,8 @@ const logger = createChildLogger({ module: "copy-workers" });
 export const copyAttemptUserWorker = createWorker<CopyAttemptJobData>(
     QUEUE_NAMES.COPY_ATTEMPT_USER,
     async (job) => {
-        const { group, portfolioScope } = job.data;
+        const { portfolioScope } = job.data;
+        const group = deserializeEventGroup(job.data.group);
         const log = logger.child({
             groupKey: group.groupKey,
             scope: portfolioScope,
@@ -73,7 +75,8 @@ export const copyAttemptUserWorker = createWorker<CopyAttemptJobData>(
 export const copyAttemptGlobalWorker = createWorker<CopyAttemptJobData>(
     QUEUE_NAMES.COPY_ATTEMPT_GLOBAL,
     async (job) => {
-        const { group, portfolioScope } = job.data;
+        const { portfolioScope } = job.data;
+        const group = deserializeEventGroup(job.data.group);
         const log = logger.child({
             groupKey: group.groupKey,
             scope: portfolioScope,

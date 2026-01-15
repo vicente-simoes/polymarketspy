@@ -5,6 +5,7 @@ import {
     fetchWalletTrades,
     priceToMicros,
     sharesToMicros,
+    usdcToMicros,
     type PolymarketTrade,
 } from "../poly/index.js";
 import { getLastTradeTime, setLastTradeTime } from "./checkpoint.js";
@@ -23,30 +24,76 @@ const SOURCE = "POLYMARKET_API";
  */
 function tradeToDbData(
     trade: PolymarketTrade,
-    followedUserId: string
+    profileWallet: string
 ): Prisma.TradeEventCreateInput {
+    let timestampSeconds: number | null = null;
+    if (typeof trade.timestamp === "number") {
+        timestampSeconds = trade.timestamp;
+    } else if (trade.match_time) {
+        const matchMs = new Date(trade.match_time).getTime();
+        timestampSeconds = Number.isFinite(matchMs) ? Math.floor(matchMs / 1000) : null;
+    }
+
+    if (timestampSeconds == null || !Number.isFinite(timestampSeconds)) {
+        throw new Error("Trade missing timestamp");
+    }
+
+    const txHash = trade.transactionHash ?? trade.transaction_hash ?? null;
+    const assetId = trade.assetId ?? trade.asset ?? trade.asset_id ?? null;
+    const marketId = trade.marketId ?? trade.market ?? trade.conditionId ?? null;
+    const proxyWalletRaw = trade.proxyWallet ?? trade.owner ?? null;
+    const proxyWallet =
+        proxyWalletRaw && proxyWalletRaw !== profileWallet ? proxyWalletRaw : null;
+
     const side = trade.side === "BUY" ? TradeSide.BUY : TradeSide.SELL;
-    const priceMicros = priceToMicros(trade.price);
     const shareMicros = sharesToMicros(trade.size);
+    const sizeNumberRaw =
+        typeof trade.size === "string" ? parseFloat(trade.size) : trade.size;
+    const sizeNumber = Number.isFinite(sizeNumberRaw) ? sizeNumberRaw : null;
+    const usdcNumberRaw =
+        trade.usdcSize != null
+            ? typeof trade.usdcSize === "string"
+                  ? parseFloat(trade.usdcSize)
+                  : trade.usdcSize
+            : null;
+    const usdcNumber = Number.isFinite(usdcNumberRaw ?? NaN) ? usdcNumberRaw : null;
+
+    let priceMicros: number | null = null;
+    if (trade.price != null) {
+        priceMicros = priceToMicros(trade.price);
+    } else if (usdcNumber != null && sizeNumber && sizeNumber > 0) {
+        priceMicros = priceToMicros(usdcNumber / sizeNumber);
+    }
+
+    if (priceMicros == null || Number.isNaN(priceMicros)) {
+        throw new Error("Trade missing price");
+    }
+
     // Notional = price * shares
     const notionalMicros =
-        (BigInt(priceMicros) * shareMicros) / BigInt(1_000_000);
+        usdcNumber != null
+            ? usdcToMicros(usdcNumber)
+            : (BigInt(priceMicros) * shareMicros) / BigInt(1_000_000);
+
+    const sourceId =
+        trade.id ??
+        `${txHash ?? "unknown"}_${timestampSeconds}_${trade.side}_${assetId ?? "unknown"}_${trade.size}`;
 
     return {
         source: SOURCE,
-        sourceId: trade.id,
-        txHash: trade.transaction_hash,
+        sourceId,
+        txHash,
         isCanonical: true,
-        profileWallet: trade.maker_address, // The followed wallet
-        proxyWallet: trade.owner !== trade.maker_address ? trade.owner : null,
-        marketId: trade.market,
-        assetId: trade.asset_id,
+        profileWallet,
+        proxyWallet,
+        marketId,
+        assetId,
         side,
         priceMicros,
         shareMicros,
         notionalMicros,
         feeMicros: null, // Fee info not always available
-        eventTime: new Date(trade.match_time),
+        eventTime: new Date(timestampSeconds * 1000),
         detectTime: new Date(),
     };
 }
@@ -71,7 +118,7 @@ export async function ingestTradesForUser(
 
     // Fetch trades from API
     const trades = await fetchWalletTrades(walletAddress, {
-        after: afterTime?.toISOString(),
+        after: afterTime ? Math.floor(afterTime.getTime() / 1000).toString() : undefined,
         limit: 100,
     });
 
@@ -86,27 +133,32 @@ export async function ingestTradesForUser(
     let latestTime: Date | null = null;
 
     for (const trade of trades) {
-        const tradeTime = new Date(trade.match_time);
-
-        // Track latest trade time for checkpoint
-        if (!latestTime || tradeTime > latestTime) {
-            latestTime = tradeTime;
-        }
+        let sourceId: string | null = null;
 
         // Idempotent upsert
         try {
-            const dbData = tradeToDbData(trade, userId);
+            const dbData = tradeToDbData(trade, walletAddress);
+            const tradeTime =
+                dbData.eventTime instanceof Date
+                    ? dbData.eventTime
+                    : new Date(dbData.eventTime);
+            sourceId = dbData.sourceId ?? null;
+
+            // Track latest trade time for checkpoint
+            if (!latestTime || tradeTime > latestTime) {
+                latestTime = tradeTime;
+            }
 
             // Check if already exists
             const existing = await prisma.tradeEvent.findFirst({
                 where: {
                     source: SOURCE,
-                    sourceId: trade.id,
+                    sourceId: dbData.sourceId,
                 },
             });
 
             if (existing) {
-                log.debug({ tradeId: trade.id }, "Trade already exists, skipping");
+                log.debug({ sourceId: dbData.sourceId }, "Trade already exists, skipping");
                 continue;
             }
 
@@ -132,7 +184,10 @@ export async function ingestTradesForUser(
                 err instanceof Prisma.PrismaClientKnownRequestError &&
                 err.code === "P2002"
             ) {
-                log.debug({ tradeId: trade.id }, "Trade already exists (constraint)");
+                log.debug(
+                    { sourceId: sourceId ?? trade.transactionHash ?? "unknown" },
+                    "Trade already exists (constraint)"
+                );
                 continue;
             }
             throw err;
@@ -170,6 +225,125 @@ export async function ingestAllUserTrades(options?: {
             );
         }
     }
+}
+
+/**
+ * Fast trade ingestion for a single wallet, triggered by Alchemy detection.
+ * Returns the number of new trades and latency metrics.
+ *
+ * This is optimized for the reconcile flow:
+ * - Only looks back 5 minutes by default
+ * - Returns timing info for latency tracking
+ */
+export async function ingestTradesForWalletFast(
+    walletAddress: string,
+    options?: {
+        afterTime?: Date;
+        alchemyDetectTime?: Date;
+    }
+): Promise<{ newCount: number; latencyMs: number }> {
+    const log = logger.child({ wallet: walletAddress, fast: true });
+    const fetchStart = Date.now();
+
+    // Look back 5 minutes by default for fast reconcile
+    const afterTime = options?.afterTime ?? new Date(Date.now() - 5 * 60 * 1000);
+
+    // Look up user by wallet
+    const followedUser = await prisma.followedUser.findUnique({
+        where: { profileWallet: walletAddress },
+    });
+
+    if (!followedUser) {
+        // Try to find by proxy wallet
+        const proxyRecord = await prisma.followedUserProxyWallet.findUnique({
+            where: { wallet: walletAddress },
+            include: { followedUser: true },
+        });
+
+        if (!proxyRecord?.followedUser) {
+            log.warn("Wallet not found in followed users");
+            return { newCount: 0, latencyMs: Date.now() - fetchStart };
+        }
+
+        // Use the profile wallet for fetching
+        return ingestTradesForWalletFast(proxyRecord.followedUser.profileWallet, options);
+    }
+
+    // Fetch trades from API
+    const trades = await fetchWalletTrades(walletAddress, {
+        after: Math.floor(afterTime.getTime() / 1000).toString(),
+        limit: 50, // Smaller limit for fast reconcile
+    });
+
+    if (trades.length === 0) {
+        log.debug("No new trades in fast fetch");
+        return { newCount: 0, latencyMs: Date.now() - fetchStart };
+    }
+
+    log.debug({ count: trades.length }, "Fast fetched trades from API");
+
+    let newCount = 0;
+
+    for (const trade of trades) {
+        let sourceId: string | null = null;
+
+        try {
+            const dbData = tradeToDbData(trade, walletAddress);
+            const tradeTime =
+                dbData.eventTime instanceof Date
+                    ? dbData.eventTime
+                    : new Date(dbData.eventTime);
+            sourceId = dbData.sourceId ?? null;
+
+            // Check if already exists
+            const existing = await prisma.tradeEvent.findFirst({
+                where: {
+                    source: SOURCE,
+                    sourceId: dbData.sourceId,
+                },
+            });
+
+            if (existing) {
+                log.debug({ sourceId: dbData.sourceId }, "Trade already exists, skipping");
+                continue;
+            }
+
+            // Insert new trade
+            const inserted = await prisma.tradeEvent.create({
+                data: dbData,
+            });
+
+            newCount++;
+            log.debug({ tradeId: inserted.id }, "Fast inserted new trade");
+
+            // Enqueue for processing (shadow ledger, aggregation, etc.)
+            await queues.ingestEvents.add("process-trade", {
+                tradeEventId: inserted.id,
+                followedUserId: followedUser.id,
+            });
+
+            // Update health status
+            setLastCanonicalEventTime(tradeTime);
+        } catch (err) {
+            // Handle unique constraint violations gracefully
+            if (
+                err instanceof Prisma.PrismaClientKnownRequestError &&
+                err.code === "P2002"
+            ) {
+                log.debug(
+                    { sourceId: sourceId ?? trade.transactionHash ?? "unknown" },
+                    "Trade already exists (constraint)"
+                );
+                continue;
+            }
+            throw err;
+        }
+    }
+
+    const latencyMs = Date.now() - fetchStart;
+    log.info({ newCount, total: trades.length, latencyMs }, "Fast trade ingestion complete");
+
+    return { newCount, latencyMs };
 }
 
 /**

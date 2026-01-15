@@ -19,7 +19,7 @@ import {
     type PendingActivityEvent,
     type TradeEventGroup,
     type ActivityEventGroup,
-    type EventGroup,
+    serializeEventGroup,
 } from "./types.js";
 
 const logger = createChildLogger({ module: "aggregator" });
@@ -150,15 +150,17 @@ async function flushTradeGroup(aggKey: string): Promise<void> {
         "Flushing trade group"
     );
 
+    const queueGroup = serializeEventGroup(group);
+
     // Enqueue for per-user executable simulation
     await queues.copyAttemptUser.add("copy-attempt-user", {
-        group,
+        group: queueGroup,
         portfolioScope: "EXEC_USER",
     });
 
     // Enqueue for global executable simulation
     await queues.copyAttemptGlobal.add("copy-attempt-global", {
-        group,
+        group: queueGroup,
         portfolioScope: "EXEC_GLOBAL",
     });
 }
@@ -218,15 +220,17 @@ async function flushActivityGroup(aggKey: string): Promise<void> {
         "Flushing activity group"
     );
 
+    const queueGroup = serializeEventGroup(group);
+
     // Enqueue for per-user executable simulation
     await queues.copyAttemptUser.add("copy-attempt-user", {
-        group,
+        group: queueGroup,
         portfolioScope: "EXEC_USER",
     });
 
     // Enqueue for global executable simulation
     await queues.copyAttemptGlobal.add("copy-attempt-global", {
-        group,
+        group: queueGroup,
         portfolioScope: "EXEC_GLOBAL",
     });
 }
