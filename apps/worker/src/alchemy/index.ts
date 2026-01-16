@@ -9,4 +9,4 @@
 export { startAlchemySubscription, stopAlchemySubscription, setAlchemyRedisClient } from "./subscription.js";
 export { getLastBlock, setLastBlock } from "./checkpoint.js";
 export type { RawLogEvent, ParsedFillEvent, ReconcileJobData } from "./types.js";
-export { CTF_EXCHANGE_ADDRESS, ORDER_FILLED_TOPIC } from "./types.js";
+export { CTF_EXCHANGE_ADDRESSES, ORDER_FILLED_TOPIC } from "./types.js";

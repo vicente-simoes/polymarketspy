@@ -23,7 +23,7 @@ import { queues } from "../queue/queues.js";
 import { setWsConnected } from "../health/server.js";
 import { getLastBlock, setLastBlock } from "./checkpoint.js";
 import {
-    CTF_EXCHANGE_ADDRESS,
+    CTF_EXCHANGE_ADDRESSES,
     ORDER_FILLED_TOPIC,
     toH256Address,
     type RawLogEvent,
@@ -434,13 +434,13 @@ async function setupSubscription(): Promise<void> {
 
     // Filter 1: maker (topics[2]) is a tracked wallet
     const makerFilter = {
-        address: CTF_EXCHANGE_ADDRESS,
+        address: CTF_EXCHANGE_ADDRESSES,
         topics: [ORDER_FILLED_TOPIC, null, paddedAddresses, null],
     };
 
     // Filter 2: taker (topics[3]) is a tracked wallet
     const takerFilter = {
-        address: CTF_EXCHANGE_ADDRESS,
+        address: CTF_EXCHANGE_ADDRESSES,
         topics: [ORDER_FILLED_TOPIC, null, null, paddedAddresses],
     };
 

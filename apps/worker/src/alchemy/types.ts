@@ -9,10 +9,25 @@
  */
 
 /**
- * Polymarket CTF Exchange contract address on Polygon.
- * This is the V2 exchange contract where all fills occur.
+ * Polymarket Exchange contracts on Polygon.
+ *
+ * NOTE:
+ * - Legacy CTF Exchange: older/standard markets
+ * - Neg Risk CTF Exchange: multi-outcome / neg-risk markets (your example tx uses this)
  */
-export const CTF_EXCHANGE_ADDRESS = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
+export const LEGACY_CTF_EXCHANGE_ADDRESS =
+  "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
+
+export const NEG_RISK_CTF_EXCHANGE_ADDRESS =
+  "0xC5d563A36AE78145C45a50134d48A1215220f80a";
+
+/**
+ * Always subscribe to both to avoid missing fills.
+ */
+export const CTF_EXCHANGE_ADDRESSES: string[] = [
+  LEGACY_CTF_EXCHANGE_ADDRESS,
+  NEG_RISK_CTF_EXCHANGE_ADDRESS,
+];
 
 /**
  * OrderFilled event signature from the CTF Exchange contract.
