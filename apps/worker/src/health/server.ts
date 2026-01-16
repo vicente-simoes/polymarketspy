@@ -3,7 +3,7 @@ import { env } from "../config/env.js";
 import { logger } from "../log/logger.js";
 import { getQueueDepths } from "../queue/queues.js";
 import { prisma } from "../db/prisma.js";
-import { getAggregateStats, getPendingBatchCount, getPendingEventCount } from "../reconcile/index.js";
+import { getAggregateStats } from "../reconcile/index.js";
 
 interface LatencyMetrics {
     p50Ms: number;
@@ -12,9 +12,11 @@ interface LatencyMetrics {
     sampleCount: number;
 }
 
+/**
+ * v0.1: Simplified reconcile metrics.
+ * Batching was removed since WS creates canonical trades directly.
+ */
 interface ReconcileMetrics {
-    pendingBatches: number;
-    pendingEvents: number;
     latency: LatencyMetrics;
 }
 
@@ -51,11 +53,9 @@ async function getHealthStatus(): Promise<HealthStatus> {
 
     const queueDepths = await getQueueDepths();
 
-    // Get reconcile/latency metrics
+    // Get latency metrics
     const latencyStats = getAggregateStats();
     const reconcile: ReconcileMetrics = {
-        pendingBatches: getPendingBatchCount(),
-        pendingEvents: getPendingEventCount(),
         latency: {
             p50Ms: latencyStats.totalLag.p50,
             p95Ms: latencyStats.totalLag.p95,

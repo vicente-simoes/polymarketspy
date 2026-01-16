@@ -8,6 +8,7 @@ import { startAlchemySubscription, stopAlchemySubscription, setAlchemyRedisClien
 import { startGroupEventsWorker, startCopyAttemptWorkers, flushAllGroups } from "./simulate/index.js";
 import { startSnapshotLoops, stopSnapshotLoops } from "./snapshot/index.js";
 import { startReconcileWorker, stopReconcileWorker, flushPendingReconciles } from "./reconcile/index.js";
+import { startEnrichmentProcessor, stopEnrichmentProcessor } from "./enrichment/index.js";
 import { loadResolvedTokensFromRedis, setRedisClient } from "./poly/index.js";
 import { env } from "./config/env.js";
 
@@ -65,6 +66,9 @@ async function main() {
     // Start reconcile worker (processes Alchemy-triggered fast fetches)
     startReconcileWorker();
 
+    // Start enrichment processor (async metadata enrichment for WS-first trades)
+    startEnrichmentProcessor();
+
     // Start snapshot loops (price refresh every 30s, portfolio snapshots every minute)
     startSnapshotLoops();
 
@@ -75,6 +79,7 @@ async function main() {
         logger.info("Shutting down...");
         stopPolling();
         stopSnapshotLoops();
+        stopEnrichmentProcessor();
         await flushAllGroups(); // Flush any pending aggregation groups
         await flushPendingReconciles(); // Flush any pending reconcile batches
         await stopReconcileWorker();

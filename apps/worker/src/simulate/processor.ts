@@ -70,8 +70,10 @@ async function processTradeForAggregation(
         return;
     }
 
-    if (!trade.assetId) {
-        log.warn("Trade has no asset ID, skipping aggregation");
+    // Need at least one token identifier (rawTokenId for WS-first, assetId for API)
+    const effectiveTokenId = trade.rawTokenId ?? trade.assetId;
+    if (!effectiveTokenId) {
+        log.warn("Trade has no token ID (neither rawTokenId nor assetId), skipping aggregation");
         return;
     }
 
@@ -81,6 +83,7 @@ async function processTradeForAggregation(
         tradeEventId: trade.id,
         followedUserId,
         assetId: trade.assetId,
+        rawTokenId: trade.rawTokenId,
         marketId: trade.marketId,
         side: trade.side,
         priceMicros: trade.priceMicros,

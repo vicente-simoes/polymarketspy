@@ -17,6 +17,7 @@ const envSchema = z.object({
         .default("true"),
     POLYMARKET_DATA_API_BASE_URL: z.string().url(),
     POLYMARKET_CLOB_BASE_URL: z.string().url(),
+    GAMMA_API_BASE_URL: z.string().url().default("https://gamma-api.polymarket.com"),
     NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
     LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error", "fatal"]).default("info"),
     WORKER_PORT: z.coerce.number().default(8081),

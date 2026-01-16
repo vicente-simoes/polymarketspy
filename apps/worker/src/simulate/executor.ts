@@ -143,12 +143,15 @@ export async function executeTradeGroup(
     portfolioScope: PortfolioScope,
     followedUserId: string | null
 ): Promise<ExecutionResult> {
+    // Use rawTokenId (on-chain) if available, otherwise assetId (API)
+    const effectiveTokenId = group.rawTokenId ?? group.assetId;
+
     const log = logger.child({
         groupKey: group.groupKey,
         scope: portfolioScope,
         followedUserId,
         side: group.side,
-        asset: group.assetId,
+        tokenId: effectiveTokenId,
     });
 
     const reasonCodes: ReasonCode[] = [];
@@ -182,9 +185,22 @@ export async function executeTradeGroup(
     );
 
     // 5. Fetch order book and simulate fills
+    if (!effectiveTokenId) {
+        log.error("No token ID available for book simulation");
+        return {
+            decision: CopyDecision.SKIP,
+            reasonCodes: [ReasonCodes.NO_LIQUIDITY_WITHIN_BOUNDS],
+            targetNotionalMicros: targetResult.targetNotionalMicros,
+            filledNotionalMicros: BigInt(0),
+            filledShareMicros: BigInt(0),
+            vwapPriceMicros: 0,
+            filledRatioBps: 0,
+        };
+    }
+
     log.debug("Fetching order book");
     const simulation = await simulateBookFills(
-        group.assetId,
+        effectiveTokenId,
         group.side,
         computeTargetShares(targetResult.targetNotionalMicros, group.vwapPriceMicros),
         priceBounds.maxPriceMicros,
@@ -232,7 +248,7 @@ export async function executeTradeGroup(
         const isReducing = await isReducingExposure(
             portfolioScope,
             followedUserId,
-            group.assetId,
+            effectiveTokenId,
             group.side
         );
 
@@ -380,7 +396,7 @@ export async function executeTradeGroup(
                 portfolioScope,
                 followedUserId,
                 marketId: group.marketId,
-                assetId: group.assetId,
+                assetId: effectiveTokenId, // Use rawTokenId for WS-first trades
                 entryType: "TRADE_FILL",
                 shareDeltaMicros,
                 cashDeltaMicros,

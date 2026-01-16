@@ -20,6 +20,7 @@ import {
     type TradeEventGroup,
     type ActivityEventGroup,
     serializeEventGroup,
+    getEffectiveTokenId,
 } from "./types.js";
 
 const logger = createChildLogger({ module: "aggregator" });
@@ -42,9 +43,10 @@ const buffer: AggregationBuffer = {
 
 /**
  * Generate aggregation key for a trade (without timestamp).
+ * Uses rawTokenId (on-chain) if available, otherwise assetId (API).
  */
-function getTradeAggKey(followedUserId: string, assetId: string, side: TradeSide): string {
-    return `${followedUserId}:${assetId}:${side}`;
+function getTradeAggKey(followedUserId: string, tokenId: string, side: TradeSide): string {
+    return `${followedUserId}:${tokenId}:${side}`;
 }
 
 /**
@@ -130,6 +132,7 @@ async function flushTradeGroup(aggKey: string): Promise<void> {
         groupKey,
         followedUserId: first.followedUserId,
         assetId: first.assetId,
+        rawTokenId: first.rawTokenId,
         marketId: first.marketId,
         side: first.side,
         totalNotionalMicros,
@@ -239,7 +242,14 @@ async function flushActivityGroup(aggKey: string): Promise<void> {
  * Add a trade event to the aggregation buffer.
  */
 export async function addTradeToAggregator(event: PendingTradeEvent): Promise<void> {
-    const aggKey = getTradeAggKey(event.followedUserId, event.assetId, event.side);
+    // Use rawTokenId (on-chain) if available, otherwise assetId (API)
+    const tokenId = getEffectiveTokenId(event);
+    if (!tokenId) {
+        logger.warn({ tradeId: event.tradeEventId }, "Trade has no token ID, skipping aggregation");
+        return;
+    }
+
+    const aggKey = getTradeAggKey(event.followedUserId, tokenId, event.side);
 
     // Get or create the buffer for this key
     let events = buffer.trades.get(aggKey);

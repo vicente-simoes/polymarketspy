@@ -19,7 +19,10 @@ export interface PendingTradeEvent {
     type: "trade";
     tradeEventId: string;
     followedUserId: string;
-    assetId: string;
+    /** Polymarket asset ID (may be null for WS-first trades before enrichment) */
+    assetId: string | null;
+    /** On-chain outcome token ID (always set for WS-first trades) */
+    rawTokenId: string | null;
     marketId: string | null;
     side: TradeSide;
     priceMicros: number;
@@ -27,6 +30,14 @@ export interface PendingTradeEvent {
     notionalMicros: bigint;
     detectTime: Date;
     eventTime: Date;
+}
+
+/**
+ * Get the effective token ID for a trade event.
+ * Prefers rawTokenId (on-chain) over assetId (API).
+ */
+export function getEffectiveTokenId(event: PendingTradeEvent): string | null {
+    return event.rawTokenId ?? event.assetId;
 }
 
 /**
@@ -50,13 +61,17 @@ export type PendingEvent = PendingTradeEvent | PendingActivityEvent;
 /**
  * Aggregated trade group ready for executable simulation.
  *
- * Group key format: <followedUserId>:<assetId>:<side>:<windowStartIso>
+ * Group key format: <followedUserId>:<tokenId>:<side>:<windowStartIso>
+ * where tokenId = rawTokenId ?? assetId
  */
 export interface TradeEventGroup {
     type: "trade";
     groupKey: string;
     followedUserId: string;
-    assetId: string;
+    /** Polymarket asset ID (may be null for WS-first trades) */
+    assetId: string | null;
+    /** On-chain outcome token ID (always set for WS-first trades) */
+    rawTokenId: string | null;
     marketId: string | null;
     side: TradeSide;
 
@@ -113,7 +128,8 @@ export interface QueueTradeEventGroup {
     type: "trade";
     groupKey: string;
     followedUserId: string;
-    assetId: string;
+    assetId: string | null;
+    rawTokenId: string | null;
     marketId: string | null;
     side: TradeSide;
     totalNotionalMicros: string;
@@ -197,6 +213,7 @@ export function serializeEventGroup(group: EventGroup): QueueEventGroup {
             groupKey: group.groupKey,
             followedUserId: group.followedUserId,
             assetId: group.assetId,
+            rawTokenId: group.rawTokenId,
             marketId: group.marketId,
             side: group.side,
             totalNotionalMicros: group.totalNotionalMicros.toString(),
@@ -230,6 +247,7 @@ export function deserializeEventGroup(group: QueueEventGroup): EventGroup {
             groupKey: group.groupKey,
             followedUserId: group.followedUserId,
             assetId: group.assetId,
+            rawTokenId: group.rawTokenId,
             marketId: group.marketId,
             side: group.side,
             totalNotionalMicros: BigInt(group.totalNotionalMicros),

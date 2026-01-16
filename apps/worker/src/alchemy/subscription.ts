@@ -2,25 +2,27 @@
  * Alchemy WebSocket subscription for low-latency fill event detection.
  *
  * This module subscribes to on-chain OrderFilled events from the Polymarket
- * CTF Exchange contract. These events are NOT canonical - they serve only as
- * triggers for fast reconciliation via the Polymarket Data API.
+ * CTF Exchange contract.
+ *
+ * v0.1: WS-first architecture - on-chain events are now CANONICAL.
+ * Polymarket Data API is used for enrichment (market metadata) only.
  *
  * Behavior:
  * - One WebSocket connection to Alchemy
  * - One logs subscription filtered by contract address + event topic
- * - On event: insert non-canonical TradeEvent and enqueue reconcile
+ * - On event: insert CANONICAL TradeEvent and enqueue for processing
  * - On disconnect: reconnect with exponential backoff
- * - On reconnect: enqueue reconcile for last 5 minutes
+ * - On reconnect: enqueue reconcile for missed events (safety net)
  */
 
 import { WebSocketProvider, AbiCoder, getAddress } from "ethers";
 import WebSocket from "ws";
-import { TradeSide, Prisma } from "@prisma/client";
+import { TradeSide, EnrichmentStatus, Prisma } from "@prisma/client";
 import { env } from "../config/env.js";
 import { prisma } from "../db/prisma.js";
 import { createChildLogger } from "../log/logger.js";
 import { queues } from "../queue/queues.js";
-import { setWsConnected } from "../health/server.js";
+import { setWsConnected, setLastCanonicalEventTime } from "../health/server.js";
 import { getLastBlock, setLastBlock } from "./checkpoint.js";
 import {
     CTF_EXCHANGE_ADDRESSES,
@@ -30,13 +32,14 @@ import {
     type ParsedFillEvent,
     type ReconcileJobData,
 } from "./types.js";
+import { deriveTradeFields, type TrackedWalletInfo } from "./decoder.js";
 
 const logger = createChildLogger({ module: "alchemy-ws" });
 
-type TrackedWalletInfo = {
-    profileWallet: string;
-    isProxy: boolean;
-};
+/**
+ * Source identifier for WS-first canonical trades.
+ */
+const WS_SOURCE = "ONCHAIN_WS";
 
 const TRACKED_WALLET_CACHE_TTL_MS = 60_000;
 let trackedWalletsCache = new Map<string, TrackedWalletInfo>();
@@ -49,12 +52,12 @@ const normalizeWallet = (wallet: string | null | undefined) =>
 async function loadTrackedWallets(): Promise<Map<string, TrackedWalletInfo>> {
     const [users, proxies] = await Promise.all([
         prisma.followedUser.findMany({
-            select: { profileWallet: true },
+            select: { id: true, profileWallet: true },
         }),
         prisma.followedUserProxyWallet.findMany({
             select: {
                 wallet: true,
-                followedUser: { select: { profileWallet: true } },
+                followedUser: { select: { id: true, profileWallet: true } },
             },
         }),
     ]);
@@ -65,6 +68,7 @@ async function loadTrackedWallets(): Promise<Map<string, TrackedWalletInfo>> {
         const normalized = normalizeWallet(user.profileWallet);
         if (!normalized) continue;
         next.set(normalized, {
+            followedUserId: user.id,
             profileWallet: user.profileWallet,
             isProxy: false,
         });
@@ -72,10 +76,11 @@ async function loadTrackedWallets(): Promise<Map<string, TrackedWalletInfo>> {
 
     for (const proxy of proxies) {
         const normalized = normalizeWallet(proxy.wallet);
-        const profileWallet = proxy.followedUser?.profileWallet ?? null;
-        if (!normalized || !profileWallet) continue;
+        const followedUser = proxy.followedUser;
+        if (!normalized || !followedUser) continue;
         next.set(normalized, {
-            profileWallet,
+            followedUserId: followedUser.id,
+            profileWallet: followedUser.profileWallet,
             isProxy: true,
         });
     }
@@ -215,18 +220,29 @@ function parseLogEvent(log: RawLogEvent): ParsedFillEvent {
     };
 }
 
-interface AlchemyInsertResult {
+interface WsTradeInsertResult {
     isNew: boolean;
+    tradeEventId: string | null;
+    followedUserId: string | null;
     profileWallet: string | null;
 }
 
 /**
- * Insert a non-canonical TradeEvent from an on-chain fill.
- * Returns whether the event was new and the matched profile wallet.
+ * Insert a CANONICAL TradeEvent from an on-chain OrderFilled event.
+ *
+ * v0.1: WS events are now canonical. All trade fields are derived from
+ * the on-chain data. Market metadata (title, outcome label) is filled
+ * later by the enrichment worker.
+ *
+ * Returns the trade event ID and followedUserId for queue processing.
  */
-async function insertAlchemyTradeEvent(event: ParsedFillEvent): Promise<AlchemyInsertResult> {
+async function insertCanonicalWsTrade(
+    event: ParsedFillEvent,
+    exchangeAddress: string
+): Promise<WsTradeInsertResult> {
     const log = logger.child({ txHash: event.txHash, logIndex: event.logIndex });
 
+    // Look up tracked wallets
     const trackedWallets = await getTrackedWallets();
     const makerKey = normalizeWallet(event.maker);
     const takerKey = normalizeWallet(event.taker);
@@ -234,9 +250,11 @@ async function insertAlchemyTradeEvent(event: ParsedFillEvent): Promise<AlchemyI
     const takerInfo = takerKey ? trackedWallets.get(takerKey) : undefined;
 
     if (!makerInfo && !takerInfo) {
-        return { isNew: false, profileWallet: null };
+        return { isNew: false, tradeEventId: null, followedUserId: null, profileWallet: null };
     }
 
+    // Determine which tracked wallet to attribute the trade to
+    // Prefer non-proxy over proxy if both are tracked
     let matchedInfo = makerInfo ?? takerInfo;
     let matchedWallet = makerInfo ? event.maker : event.taker;
 
@@ -245,16 +263,15 @@ async function insertAlchemyTradeEvent(event: ParsedFillEvent): Promise<AlchemyI
         matchedWallet = event.taker;
     }
 
-    const profileWallet = matchedInfo!.profileWallet;
-    const proxyWallet = matchedInfo!.isProxy ? matchedWallet : null;
+    const walletInfo = matchedInfo!;
 
     // Skip removed/reorged events
     if (event.removed) {
         log.debug("Skipping removed event (reorg)");
-        return { isNew: false, profileWallet };
+        return { isNew: false, tradeEventId: null, followedUserId: walletInfo.followedUserId, profileWallet: walletInfo.profileWallet };
     }
 
-    // Check if already exists by txHash + logIndex
+    // Check if already exists by txHash + logIndex (idempotency)
     const existing = await prisma.tradeEvent.findFirst({
         where: {
             txHash: event.txHash,
@@ -264,101 +281,118 @@ async function insertAlchemyTradeEvent(event: ParsedFillEvent): Promise<AlchemyI
 
     if (existing) {
         log.debug("Event already exists, skipping");
-        return { isNew: false, profileWallet };
+        return { isNew: false, tradeEventId: existing.id, followedUserId: walletInfo.followedUserId, profileWallet: walletInfo.profileWallet };
     }
 
-    // Determine side: if maker is receiving the asset, they're buying
-    // The maker receives takerAssetId and gives makerAssetId
-    // In Polymarket CTF: one side is always USDC (collateral)
-    // If takerAssetId is USDC, maker is selling outcome tokens
-    // If makerAssetId is USDC, maker is buying outcome tokens
-    // Without knowing which is USDC, we'll store as BUY (reconcile will fix)
-    const side = TradeSide.BUY;
+    // Derive all trade fields from the raw event
+    const decoded = deriveTradeFields(event, matchedWallet, walletInfo, exchangeAddress);
 
-    // Store amounts as micros (6 decimals)
-    // Note: actual price calculation requires knowing which is the outcome token
-    // For now, store raw values - canonical reconcile will provide accurate data
-    const shareMicros = event.makerAmountFilled;
-    const notionalMicros = event.takerAmountFilled;
-
-    // Price in micros (0..1_000_000) - rough estimate
-    // Actual price = notional / shares, but we need to know decimals
-    // Setting to 0 as this is non-canonical - reconcile provides real values
-    const priceMicros = 0;
+    // Map side to Prisma enum
+    const side = decoded.side === "BUY" ? TradeSide.BUY : TradeSide.SELL;
+    const proxyWallet = decoded.isProxy ? matchedWallet : null;
 
     try {
-        await prisma.tradeEvent.create({
+        const inserted = await prisma.tradeEvent.create({
             data: {
-                source: "ALCHEMY",
-                sourceId: null, // Alchemy events don't have a source ID
-                txHash: event.txHash,
-                logIndex: event.logIndex,
-                isCanonical: false,
-                profileWallet,
+                source: WS_SOURCE,
+                sourceId: null, // WS events use txHash+logIndex for uniqueness
+                txHash: decoded.txHash,
+                logIndex: decoded.logIndex,
+                isCanonical: true, // WS-first: on-chain is canonical
+                profileWallet: decoded.profileWallet,
                 proxyWallet,
-                marketId: null, // Not available from on-chain event
-                assetId: event.makerAssetId.toString(), // Store as string
+                marketId: null, // Filled by enrichment
+                assetId: null, // Filled by enrichment (Polymarket asset ID)
+                enrichmentStatus: EnrichmentStatus.PENDING,
+                enrichedAt: null,
+                rawTokenId: decoded.outcomeTokenId, // Store for enrichment lookup
+                conditionId: null, // Filled by enrichment
                 side,
-                priceMicros,
-                shareMicros,
-                notionalMicros,
-                feeMicros: event.fee,
-                eventTime: new Date(), // Block timestamp not available, use detect time
-                detectTime: new Date(),
+                priceMicros: decoded.priceMicros,
+                shareMicros: decoded.shareMicros,
+                notionalMicros: decoded.notionalMicros,
+                feeMicros: decoded.feeMicros,
+                eventTime: decoded.detectTime, // Use detect time; block timestamp requires extra RPC
+                detectTime: decoded.detectTime,
             },
         });
 
-        log.info({ profileWallet, proxyWallet }, "Inserted Alchemy trade event");
-        return { isNew: true, profileWallet };
+        log.info(
+            {
+                tradeId: inserted.id,
+                profileWallet: decoded.profileWallet,
+                side: decoded.side,
+                priceMicros: decoded.priceMicros,
+                notionalMicros: decoded.notionalMicros.toString(),
+                tokenId: decoded.outcomeTokenId,
+            },
+            "Inserted canonical WS trade"
+        );
+
+        // Update health status with canonical event time
+        setLastCanonicalEventTime(decoded.detectTime);
+
+        return {
+            isNew: true,
+            tradeEventId: inserted.id,
+            followedUserId: walletInfo.followedUserId,
+            profileWallet: decoded.profileWallet,
+        };
     } catch (err) {
-        // Handle unique constraint violations gracefully
+        // Handle unique constraint violations gracefully (race condition)
         if (
             err instanceof Prisma.PrismaClientKnownRequestError &&
             err.code === "P2002"
         ) {
             log.debug("Event already exists (constraint)");
-            return { isNew: false, profileWallet };
+            return { isNew: false, tradeEventId: null, followedUserId: walletInfo.followedUserId, profileWallet: walletInfo.profileWallet };
         }
         throw err;
     }
 }
 
 /**
- * Enqueue a reconcile job to verify and process the event canonically.
+ * Enqueue a reconcile job for safety-net backfills.
+ * v0.1: Only used for reconnect and periodic backfills.
  */
 async function enqueueReconcile(data: ReconcileJobData): Promise<void> {
     await queues.reconcile.add("reconcile", data, {
-        // Deduplicate by txHash for event-triggered reconciles
-        // Note: BullMQ doesn't allow colons in job IDs, using underscore separator
-        jobId: data.txHash ? `reconcile_${data.txHash}` : undefined,
+        // For reconnect backfills, use reason_timestamp as job ID to allow
+        // multiple reconnect backfills but deduplicate rapid reconnects
+        jobId: `reconcile_${data.reason}_${Date.now()}`,
     });
     logger.debug({ reason: data.reason }, "Enqueued reconcile job");
 }
 
 /**
  * Handle a received log event from the WebSocket subscription.
+ *
+ * v0.1: Creates canonical trade and enqueues for immediate processing.
+ * No reconcile needed - WS events are the source of truth.
  */
-async function handleLogEvent(log: RawLogEvent): Promise<void> {
-    const eventLogger = logger.child({ txHash: log.transactionHash });
+async function handleLogEvent(rawLog: RawLogEvent): Promise<void> {
+    const eventLogger = logger.child({ txHash: rawLog.transactionHash });
 
     try {
-        const parsed = parseLogEvent(log);
+        const parsed = parseLogEvent(rawLog);
         eventLogger.debug({ blockNumber: parsed.blockNumber }, "Received fill event");
 
-        // Insert non-canonical event
-        const result = await insertAlchemyTradeEvent(parsed);
+        // Insert canonical WS trade
+        const result = await insertCanonicalWsTrade(parsed, rawLog.address);
 
         // Update checkpoint
         await setLastBlock(parsed.blockNumber);
 
-        // Enqueue reconcile if this is a new event for a tracked wallet
-        if (result.isNew && result.profileWallet) {
-            await enqueueReconcile({
-                reason: "alchemy_event",
-                txHash: parsed.txHash,
-                walletAddress: result.profileWallet,
-                triggeredAt: new Date().toISOString(),
+        // Enqueue for processing if this is a new trade for a tracked wallet
+        if (result.isNew && result.tradeEventId && result.followedUserId) {
+            await queues.ingestEvents.add("process-trade", {
+                tradeEventId: result.tradeEventId,
+                followedUserId: result.followedUserId,
             });
+            eventLogger.debug(
+                { tradeEventId: result.tradeEventId },
+                "Enqueued WS trade for processing"
+            );
         }
     } catch (err) {
         eventLogger.error({ err }, "Failed to process log event");

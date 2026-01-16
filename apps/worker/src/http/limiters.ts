@@ -53,6 +53,18 @@ export const alchemyFallbackLimiter = new Bottleneck({
     reservoirRefreshInterval: 1000,
 });
 
+/**
+ * Gamma API limiter for enrichment.
+ * Low priority - enrichment is not time-sensitive.
+ * Conservative limits to avoid hitting Gamma rate limits.
+ */
+export const gammaLimiter = new Bottleneck({
+    minTime: 500, // 2 rps max
+    reservoir: 5, // Low burst
+    reservoirRefreshAmount: 2,
+    reservoirRefreshInterval: 1000,
+});
+
 // Log when API requests fail (note: "failed" event fires on job errors, not limiter throttling)
 polymarketHighPriorityLimiter.on("failed", (error, jobInfo) => {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -75,5 +87,13 @@ alchemyFallbackLimiter.on("failed", (error, jobInfo) => {
     logger.warn(
         { error: errorMessage, jobId: jobInfo.options.id },
         "Alchemy API request failed"
+    );
+});
+
+gammaLimiter.on("failed", (error, jobInfo) => {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    logger.warn(
+        { error: errorMessage, jobId: jobInfo.options.id },
+        "Gamma API request failed"
     );
 });

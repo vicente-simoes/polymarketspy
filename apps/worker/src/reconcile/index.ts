@@ -1,8 +1,10 @@
 /**
- * Reconcile module for fast Alchemy-triggered trade ingestion.
+ * Reconcile module for safety-net trade ingestion.
  *
- * Reduces trade detection latency from ~30-60s (polling) to ~2-5s
- * by using Alchemy WebSocket events as triggers for immediate API fetches.
+ * v0.1 WS-first architecture:
+ * - Primary detection: On-chain WS events create canonical trades directly
+ * - Reconcile is now a SAFETY NET only (reconnect backfill, periodic catch-up)
+ * - Regular polling (30s) also catches any missed trades
  */
 
 export {
@@ -17,8 +19,3 @@ export {
     type LatencyStats,
     type AggregateLatencyStats,
 } from "./latency.js";
-
-export {
-    getPendingBatchCount,
-    getPendingEventCount,
-} from "./batcher.js";

@@ -4,8 +4,8 @@
  * This module defines the contract addresses and event signatures needed to
  * subscribe to on-chain fill events via Alchemy WebSocket.
  *
- * IMPORTANT: This is NOT canonical data. It's used only as a trigger for
- * fast reconciliation. The Polymarket Data API remains the source of truth.
+ * v0.1: WS-first architecture - on-chain events are now CANONICAL.
+ * Polymarket Data API is used for enrichment (market metadata) only.
  */
 
 /**
@@ -93,11 +93,90 @@ export interface ParsedFillEvent {
 
 /**
  * Reconcile job payload for the q_reconcile queue.
+ *
+ * v0.1: Simplified - only used for safety-net backfills.
+ * - alchemy_reconnect: Backfill after WS reconnection (5 minutes)
+ * - periodic: Safety net backfill (2 minutes)
+ *
+ * Note: Primary trade detection now happens via WS subscription
+ * which creates canonical trades directly (no reconcile needed).
  */
 export interface ReconcileJobData {
-    reason: "alchemy_event" | "alchemy_reconnect" | "periodic";
-    txHash?: string;
-    walletAddress?: string;
+    reason: "alchemy_reconnect" | "periodic";
     backfillMinutes?: number;
     triggeredAt: string;
+}
+
+// ============================================================================
+// WS-first canonical trade types (v0.1)
+// ============================================================================
+
+/**
+ * Collateral decimals for Polymarket (USDCe on Polygon).
+ * Outcome tokens use the same base units as collateral (1:1 split).
+ * Future-proofing: this could be made configurable per chain/market.
+ */
+export const COLLATERAL_DECIMALS = 6;
+
+/**
+ * In OrderFilled events, assetId == 0 represents USDC (collateral).
+ * The non-zero assetId is the outcome token.
+ */
+export const USDC_ASSET_ID = 0n;
+
+/**
+ * Role of the followed wallet in an OrderFilled event.
+ */
+export type FillRole = "MAKER" | "TAKER";
+
+/**
+ * Fully decoded and derived OrderFilled event ready for DB insertion.
+ * Contains all fields needed to create a canonical TradeEvent.
+ */
+export interface DecodedOrderFilled {
+    // === From raw log ===
+    txHash: string;
+    logIndex: number;
+    blockNumber: number;
+    exchangeAddress: string;
+
+    // === Raw event fields ===
+    orderHash: string;
+    maker: string;
+    taker: string;
+    makerAssetId: bigint;
+    takerAssetId: bigint;
+    makerAmountFilled: bigint;
+    takerAmountFilled: bigint;
+    fee: bigint;
+
+    // === Derived fields ===
+    /** The outcome token ID (non-USDC assetId, as string for DB storage) */
+    outcomeTokenId: string;
+    /** USDC amount in micros (6 decimals) */
+    usdcAmountMicros: bigint;
+    /** Token amount in micros (6 decimals) */
+    tokenAmountMicros: bigint;
+    /** The tracked wallet address involved in this fill */
+    followedWallet: string;
+    /** Whether followed wallet is the proxy (true) or profile wallet (false) */
+    isProxy: boolean;
+    /** The profile wallet address (may differ from followedWallet if proxy) */
+    profileWallet: string;
+    /** Role of followed wallet in this fill */
+    role: FillRole;
+    /** Trade side from followed wallet's perspective */
+    side: "BUY" | "SELL";
+    /** Price in micros (0..1_000_000) */
+    priceMicros: number;
+    /** Notional (USDC) in micros */
+    notionalMicros: bigint;
+    /** Shares (tokens) in micros */
+    shareMicros: bigint;
+    /** Fee in micros (paid by maker of this order) */
+    feeMicros: bigint;
+
+    // === Timestamps ===
+    /** When the WS event was detected */
+    detectTime: Date;
 }

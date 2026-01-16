@@ -14,12 +14,95 @@ interface TradeRow {
     userLabel?: string | null
     marketId?: string | null
     assetId?: string | null
+    rawTokenId?: string | null
+    enrichmentStatus?: "PENDING" | "ENRICHED" | "FAILED"
     side: "BUY" | "SELL"
     priceMicros: number
     shareMicros: string | number
     notionalMicros: string | number
     eventTime: string
     detectTime: string
+}
+
+/**
+ * Format source display with enrichment status.
+ * WS-first architecture: on-chain events show enrichment status.
+ */
+function formatSourceBadge(trade: TradeRow): { label: string; className: string } {
+    const { source, enrichmentStatus } = trade
+
+    if (source === "ONCHAIN_WS") {
+        if (enrichmentStatus === "PENDING") {
+            return {
+                label: "On-chain ⏳",
+                className: "bg-[#2b2612] text-[#fbbf24]" // Yellow/amber for pending
+            }
+        }
+        if (enrichmentStatus === "FAILED") {
+            return {
+                label: "On-chain ⚠️",
+                className: "bg-[#2b1212] text-[#f87171]" // Red for failed
+            }
+        }
+        // ENRICHED or undefined (old records)
+        return {
+            label: "On-chain",
+            className: "bg-[#102b1a] text-[#86efac]" // Green for on-chain
+        }
+    }
+
+    if (source === "POLYMARKET_API") {
+        return {
+            label: "API",
+            className: "bg-[#1A1A1A] text-[#cfcfcf]" // Gray for API
+        }
+    }
+
+    // Fallback for any other source
+    return {
+        label: source,
+        className: "bg-[#1A1A1A] text-[#cfcfcf]"
+    }
+}
+
+/**
+ * Format market/asset display with fallback for pending enrichment.
+ */
+function formatMarketDisplay(trade: TradeRow): { market: string; asset: string } {
+    const { marketId, assetId, rawTokenId, enrichmentStatus } = trade
+
+    // If we have market data, use it
+    if (marketId) {
+        return {
+            market: marketId,
+            asset: assetId ?? rawTokenId ?? "N/A"
+        }
+    }
+
+    // WS-first trade without enrichment yet
+    if (rawTokenId) {
+        const truncatedToken = rawTokenId.length > 12
+            ? `${rawTokenId.slice(0, 6)}...${rawTokenId.slice(-4)}`
+            : rawTokenId
+
+        if (enrichmentStatus === "PENDING") {
+            return {
+                market: "Enriching...",
+                asset: `Token: ${truncatedToken}`
+            }
+        }
+        if (enrichmentStatus === "FAILED") {
+            return {
+                market: "Unknown Market",
+                asset: `Token: ${truncatedToken}`
+            }
+        }
+    }
+
+    return {
+        market: "Unknown",
+        asset: assetId ?? rawTokenId ?? "N/A"
+    }
 }
 
 export default function TradesPage() {
@@ -52,7 +135,8 @@ export default function TradesPage() {
         if (!trades || !Array.isArray(trades)) return []
         return trades.filter((trade) => {
             const userField = `${trade.userLabel ?? ""} ${trade.profileWallet ?? ""} ${trade.proxyWallet ?? ""}`.toLowerCase()
-            const marketField = `${trade.marketId ?? ""} ${trade.assetId ?? ""}`.toLowerCase()
+            // Include rawTokenId in market search for WS-first trades
+            const marketField = `${trade.marketId ?? ""} ${trade.assetId ?? ""} ${trade.rawTokenId ?? ""}`.toLowerCase()
             const matchesUser = !userQuery || userField.includes(userQuery)
             const matchesMarket = !marketQuery || marketField.includes(marketQuery)
             return matchesUser && matchesMarket
@@ -171,12 +255,20 @@ export default function TradesPage() {
                                                             {trade.userLabel ?? formatWallet(trade.profileWallet)}
                                                         </td>
                                                         <td className="py-4 px-3 text-sm text-white">
-                                                            <div className="font-medium">
-                                                                {trade.marketId ?? "Unknown"}
-                                                            </div>
-                                                            <div className="text-xs text-[#6f6f6f] font-mono">
-                                                                {trade.assetId ?? "Asset N/A"}
-                                                            </div>
+                                                            {(() => {
+                                                                const { market, asset } = formatMarketDisplay(trade)
+                                                                const isPending = trade.enrichmentStatus === "PENDING"
+                                                                return (
+                                                                    <>
+                                                                        <div className={`font-medium ${isPending ? "text-[#6f6f6f] italic" : ""}`}>
+                                                                            {market}
+                                                                        </div>
+                                                                        <div className="text-xs text-[#6f6f6f] font-mono">
+                                                                            {asset}
+                                                                        </div>
+                                                                    </>
+                                                                )
+                                                            })()}
                                                         </td>
                                                         <td className="py-4 px-3">
                                                             <span
@@ -200,9 +292,14 @@ export default function TradesPage() {
                                                             )}
                                                         </td>
                                                         <td className="py-4 px-3 text-right text-sm text-white">
-                                                            <span className="rounded-full bg-[#1A1A1A] px-2 py-1 text-xs text-[#cfcfcf]">
-                                                                {trade.source}
-                                                            </span>
+                                                            {(() => {
+                                                                const { label, className } = formatSourceBadge(trade)
+                                                                return (
+                                                                    <span className={`rounded-full px-2 py-1 text-xs ${className}`}>
+                                                                        {label}
+                                                                    </span>
+                                                                )
+                                                            })()}
                                                         </td>
                                                     </tr>
                                                 ))

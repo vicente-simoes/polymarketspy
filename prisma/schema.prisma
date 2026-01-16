@@ -34,6 +34,12 @@ enum CopyDecision {
   SKIP
 }
 
+enum EnrichmentStatus {
+  PENDING   // WS-first, minimal data only
+  ENRICHED  // Market metadata filled
+  FAILED    // Enrichment failed after retries
+}
+
 enum LedgerEntryType {
   TRADE_FILL
   MERGE
@@ -117,7 +123,7 @@ model OutcomeAsset {
 
 model TradeEvent {
   id                   String   @id @default(uuid())
-  // source can be POLYMARKET_API or ALCHEMY
+  // source: POLYMARKET_API, ALCHEMY (legacy non-canonical), or ONCHAIN_WS (canonical WS-first)
   source               String
   sourceId             String?
   txHash               String?
@@ -129,6 +135,12 @@ model TradeEvent {
 
   marketId             String?
   assetId              String?
+
+  // WS-first enrichment support
+  enrichmentStatus     EnrichmentStatus @default(ENRICHED)  // Existing API trades are already enriched
+  enrichedAt           DateTime?
+  rawTokenId           String?          // Outcome token ID from OrderFilled log (non-USDC assetId)
+  conditionId          String?          // CTF conditionId (filled by enrichment)
 
   side                 TradeSide
   priceMicros          Int      // 0..1_000_000
@@ -144,8 +156,24 @@ model TradeEvent {
   @@index([profileWallet, eventTime])
   @@index([proxyWallet, eventTime])
   @@index([assetId, eventTime])
+  @@index([enrichmentStatus])         // For efficient pending enrichment queries
   @@unique([source, sourceId])
   @@unique([txHash, logIndex])
+}
+
+model TokenMetadataCache {
+  tokenId       String    @id           // Outcome token ID (BigInt as string)
+  conditionId   String?                 // CTF conditionId (from on-chain or API)
+  marketId      String?                 // Polymarket market ID
+  marketSlug    String?                 // For display/linking
+  outcomeLabel  String?                 // "Yes" / "No" / custom outcome
+  marketTitle   String?                 // Full market question
+  closeTime     DateTime?               // Market close time
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([conditionId])
+  @@index([marketId])
 }
 
 model ActivityEvent {

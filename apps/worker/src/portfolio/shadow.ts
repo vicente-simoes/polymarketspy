@@ -30,6 +30,10 @@ export async function applyShadowTrade(
         return;
     }
 
+    // Use rawTokenId (on-chain) if available, otherwise assetId (API)
+    // For WS-first trades, assetId is null but rawTokenId is set
+    const effectiveAssetId = trade.rawTokenId ?? trade.assetId;
+
     // Compute ledger entry values
     // BUY: +shares, -cash (spending USDC to buy shares)
     // SELL: -shares, +cash (selling shares for USDC)
@@ -54,7 +58,7 @@ export async function applyShadowTrade(
                 portfolioScope: PortfolioScope.SHADOW_USER,
                 followedUserId,
                 marketId: trade.marketId,
-                assetId: trade.assetId,
+                assetId: effectiveAssetId, // Use rawTokenId for WS-first trades
                 entryType: LedgerEntryType.TRADE_FILL,
                 shareDeltaMicros,
                 cashDeltaMicros,
@@ -67,7 +71,7 @@ export async function applyShadowTrade(
         });
 
         log.debug(
-            { side: trade.side, shareDelta: shareDeltaMicros.toString(), cashDelta: cashDeltaMicros.toString() },
+            { side: trade.side, assetId: effectiveAssetId, shareDelta: shareDeltaMicros.toString(), cashDelta: cashDeltaMicros.toString() },
             "Applied shadow ledger entry"
         );
     } catch (err) {
