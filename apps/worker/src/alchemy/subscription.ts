@@ -25,6 +25,7 @@ import { getLastBlock, setLastBlock } from "./checkpoint.js";
 import {
     CTF_EXCHANGE_ADDRESS,
     ORDER_FILLED_TOPIC,
+    toH256Address,
     type RawLogEvent,
     type ParsedFillEvent,
     type ReconcileJobData,
@@ -121,6 +122,18 @@ let subscriptionId: string | null = null;
 let isRunning = false;
 let currentBackoffMs = INITIAL_BACKOFF_MS;
 let reconnectTimeout: NodeJS.Timeout | null = null;
+
+// Subscription filtering state
+let subscribedWalletHash: string | null = null;
+const RESUBSCRIBE_CHECK_INTERVAL_MS = 60_000; // Align with cache TTL
+let resubscribeInterval: NodeJS.Timeout | null = null;
+
+/**
+ * Create a hash of the wallet list for change detection.
+ */
+function hashWalletList(wallets: string[]): string {
+    return wallets.sort().join(",");
+}
 
 // Redis client reference (set via setAlchemyRedisClient)
 // Using generic interface compatible with ioredis
@@ -353,40 +366,114 @@ async function handleLogEvent(log: RawLogEvent): Promise<void> {
 }
 
 /**
- * Set up the eth_subscribe logs subscription.
+ * Log event handler callback for provider.on().
+ * Converts ethers Log format to our RawLogEvent format.
+ */
+async function handleLogCallback(log: {
+    address: string;
+    topics: readonly string[];
+    data: string;
+    blockNumber: number;
+    transactionHash: string;
+    transactionIndex: number;
+    blockHash: string;
+    index: number;
+    removed: boolean;
+}): Promise<void> {
+    const rawLog: RawLogEvent = {
+        address: log.address,
+        topics: [...log.topics],
+        data: log.data,
+        blockNumber: "0x" + log.blockNumber.toString(16),
+        transactionHash: log.transactionHash,
+        transactionIndex: "0x" + log.transactionIndex.toString(16),
+        blockHash: log.blockHash,
+        logIndex: "0x" + log.index.toString(16),
+        removed: log.removed,
+    };
+    await handleLogEvent(rawLog);
+}
+
+/**
+ * Set up the eth_subscribe logs subscription filtered by tracked wallets.
+ *
+ * Uses topic filtering to only receive OrderFilled events where the
+ * maker OR taker is a tracked wallet. This significantly reduces
+ * bandwidth and compute unit consumption on Alchemy.
+ *
+ * Since topic positions use AND logic, we need two subscriptions:
+ * 1. Filter by maker in tracked wallets
+ * 2. Filter by taker in tracked wallets
+ *
+ * Duplicates (when both maker AND taker are tracked) are handled by
+ * existing deduplication logic (txHash + logIndex unique).
  */
 async function setupSubscription(): Promise<void> {
     if (!provider) {
         throw new Error("Provider not initialized");
     }
 
-    const filter = {
+    const trackedWallets = await getTrackedWallets();
+    const walletAddresses = Array.from(trackedWallets.keys());
+
+    if (walletAddresses.length === 0) {
+        // No wallets to track - don't subscribe (saves bandwidth)
+        logger.info("No tracked wallets, skipping Alchemy subscription");
+        subscribedWalletHash = "";
+        return;
+    }
+
+    // Pad addresses to H256 format for topic filtering
+    const paddedAddresses = walletAddresses.map(toH256Address);
+    subscribedWalletHash = hashWalletList(walletAddresses);
+
+    logger.info(
+        { walletCount: walletAddresses.length },
+        "Setting up filtered logs subscription"
+    );
+
+    // Filter 1: maker (topics[2]) is a tracked wallet
+    const makerFilter = {
         address: CTF_EXCHANGE_ADDRESS,
-        topics: [ORDER_FILLED_TOPIC],
+        topics: [ORDER_FILLED_TOPIC, null, paddedAddresses, null],
     };
 
-    logger.info({ filter }, "Setting up logs subscription");
+    // Filter 2: taker (topics[3]) is a tracked wallet
+    const takerFilter = {
+        address: CTF_EXCHANGE_ADDRESS,
+        topics: [ORDER_FILLED_TOPIC, null, null, paddedAddresses],
+    };
 
-    // ethers v6 doesn't have direct eth_subscribe for logs
-    // We use provider.on("log", ...) which internally subscribes
-    provider.on(filter, async (log) => {
-        // The log from ethers is already parsed, we need the raw format
-        // Convert ethers Log to our RawLogEvent format
-        const rawLog: RawLogEvent = {
-            address: log.address,
-            topics: [...log.topics],
-            data: log.data,
-            blockNumber: "0x" + log.blockNumber.toString(16),
-            transactionHash: log.transactionHash,
-            transactionIndex: "0x" + log.transactionIndex.toString(16),
-            blockHash: log.blockHash,
-            logIndex: "0x" + log.index.toString(16),
-            removed: log.removed,
-        };
-        await handleLogEvent(rawLog);
-    });
+    provider.on(makerFilter, handleLogCallback);
+    provider.on(takerFilter, handleLogCallback);
 
-    logger.info("Logs subscription active");
+    logger.info("Filtered logs subscription active");
+}
+
+/**
+ * Check if tracked wallets have changed and resubscribe if needed.
+ * Called periodically to detect new wallets added via the web UI.
+ */
+async function checkAndResubscribe(): Promise<void> {
+    if (!provider || !isRunning) return;
+
+    try {
+        const trackedWallets = await getTrackedWallets();
+        const walletAddresses = Array.from(trackedWallets.keys());
+        const newHash = hashWalletList(walletAddresses);
+
+        if (newHash !== subscribedWalletHash) {
+            const oldCount = subscribedWalletHash?.split(",").filter(Boolean).length ?? 0;
+            logger.info(
+                { oldCount, newCount: walletAddresses.length },
+                "Tracked wallets changed, resubscribing"
+            );
+            provider.removeAllListeners();
+            await setupSubscription();
+        }
+    } catch (err) {
+        logger.error({ err }, "Error checking for wallet changes");
+    }
 }
 
 /**
@@ -490,12 +577,24 @@ async function connect(): Promise<void> {
         provider.on("error", (err: Error) => {
             logger.error({ err: err.message }, "Provider error");
             if (isRunning && provider === newProvider) {
-                handleDisconnect();
+                handleDisconnect().catch((disconnectErr) => {
+                    logger.error({ err: disconnectErr }, "Error during disconnect handling");
+                });
             }
         });
 
         // Set up subscription
         await setupSubscription();
+
+        // Start periodic check for wallet changes
+        if (resubscribeInterval) {
+            clearInterval(resubscribeInterval);
+        }
+        resubscribeInterval = setInterval(() => {
+            checkAndResubscribe().catch((err) => {
+                logger.error({ err }, "Unhandled error in resubscribe check");
+            });
+        }, RESUBSCRIBE_CHECK_INTERVAL_MS);
 
         // Note: We do NOT use getNetwork() for health checks.
         // Per Alchemy docs, WebSocket should only be used for eth_subscribe/eth_unsubscribe.
@@ -546,11 +645,25 @@ async function connect(): Promise<void> {
 /**
  * Handle disconnection from WebSocket.
  */
-function handleDisconnect(): void {
+async function handleDisconnect(): Promise<void> {
     setWsConnected(false);
     subscriptionId = null;
+    subscribedWalletHash = null;
+
+    // Clear resubscribe interval
+    if (resubscribeInterval) {
+        clearInterval(resubscribeInterval);
+        resubscribeInterval = null;
+    }
+
+    // Properly destroy the provider to close the WebSocket connection
     if (provider) {
         provider.removeAllListeners();
+        try {
+            await provider.destroy();
+        } catch (err) {
+            logger.debug({ err }, "Error destroying provider during disconnect");
+        }
         provider = null;
     }
 
@@ -647,6 +760,13 @@ export async function stopAlchemySubscription(): Promise<void> {
         clearTimeout(reconnectTimeout);
         reconnectTimeout = null;
     }
+
+    if (resubscribeInterval) {
+        clearInterval(resubscribeInterval);
+        resubscribeInterval = null;
+    }
+
+    subscribedWalletHash = null;
 
     if (provider) {
         provider.removeAllListeners();
