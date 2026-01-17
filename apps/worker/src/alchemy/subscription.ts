@@ -511,59 +511,6 @@ async function checkAndResubscribe(): Promise<void> {
 }
 
 /**
- * Create a WebSocket connection with proper error handling.
- * This creates the WebSocket FIRST with error handlers attached,
- * preventing unhandled 'error' events from crashing Node.js.
- */
-function createWebSocket(url: string): Promise<WebSocket> {
-    return new Promise((resolve, reject) => {
-        let settled = false;
-        let ws: WebSocket | null = null;
-
-        const settle = (fn: () => void) => {
-            if (!settled) {
-                settled = true;
-                fn();
-            }
-        };
-
-        const onError = (err: Error) => {
-            settle(() => {
-                if (ws) {
-                    ws.removeAllListeners();
-                    ws.close();
-                }
-                reject(err);
-            });
-        };
-
-        const onOpen = () => {
-            settle(() => {
-                ws!.removeListener("error", onError);
-                ws!.removeListener("open", onOpen);
-                resolve(ws!);
-            });
-        };
-
-        // Create WebSocket with error handler attached immediately
-        ws = new WebSocket(url);
-        ws.on("error", onError);
-        ws.on("open", onOpen);
-
-        // Connection timeout
-        setTimeout(() => {
-            settle(() => {
-                if (ws) {
-                    ws.removeAllListeners();
-                    ws.close();
-                }
-                reject(new Error("WebSocket connection timeout after 30s"));
-            });
-        }, 30000);
-    });
-}
-
-/**
  * Create a WebSocketProvider with proper error handling.
  * The ws library emits 'error' on the WebSocket during HTTP upgrade failures (like 429),
  * which must be caught to prevent crashing Node.js.
@@ -572,18 +519,94 @@ function createWebSocket(url: string): Promise<WebSocket> {
  * Per Alchemy docs, WebSocket connections should be used exclusively for eth_subscribe/eth_unsubscribe.
  */
 async function createProvider(url: string): Promise<WebSocketProvider> {
-    // First create the WebSocket with proper error handling
-    const ws = await createWebSocket(url);
+    /**
+     * Important: ethers' WebSocketProvider relies on the underlying socket's `onopen`
+     * firing AFTER the provider is constructed (it attaches `websocket.onopen = ...`
+     * in the constructor). If we wait for 'open' first and then construct the provider,
+     * the provider never starts and no subscriptions/RPCs are sent.
+     */
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        let timeout: NodeJS.Timeout | null = null;
 
-    // Create provider with staticNetwork to prevent initialization RPC calls
-    // Polygon mainnet chainId is 137
-    const newProvider = new WebSocketProvider(
-        ws as unknown as globalThis.WebSocket,
-        { chainId: 137, name: "matic" },  // Static network - no RPC calls
-        { staticNetwork: true }
-    );
+        // Create WebSocket immediately so we can attach an 'error' listener right away
+        // (prevents unhandled 'error' events from crashing Node.js on upgrade failures).
+        const ws = new WebSocket(url);
 
-    return newProvider;
+        // Create provider immediately (before the socket opens) so ethers can attach onopen/onmessage.
+        const newProvider = new WebSocketProvider(
+            ws as unknown as globalThis.WebSocket,
+            { chainId: 137, name: "matic" }, // Static network - no RPC calls
+            { staticNetwork: true }
+        );
+
+        const settle = (fn: () => void) => {
+            if (settled) return;
+            settled = true;
+            if (timeout) {
+                clearTimeout(timeout);
+                timeout = null;
+            }
+            fn();
+        };
+
+        const onOpen = () => {
+            settle(() => resolve(newProvider));
+        };
+
+        const onError = (err: Error) => {
+            if (!settled) {
+                settle(() => {
+                    try {
+                        ws.close();
+                    } catch {
+                        // ignore
+                    }
+                    reject(err);
+                });
+                return;
+            }
+
+            // After we're connected, treat WebSocket errors as disconnects.
+            logger.error({ err: err.message }, "WebSocket error");
+            if (isRunning && provider === newProvider) {
+                handleDisconnect().catch((disconnectErr) => {
+                    logger.error({ err: disconnectErr }, "Error during disconnect handling");
+                });
+            }
+        };
+
+        const onClose = (code: number, reason: Buffer) => {
+            if (!settled) {
+                const msg = `WebSocket closed before open (code=${code}, reason=${reason.toString()})`;
+                settle(() => reject(new Error(msg)));
+                return;
+            }
+
+            logger.warn({ code, reason: reason.toString() }, "WebSocket closed");
+            if (isRunning && provider === newProvider) {
+                handleDisconnect().catch((disconnectErr) => {
+                    logger.error({ err: disconnectErr }, "Error during disconnect handling");
+                });
+            }
+        };
+
+        ws.on("open", onOpen);
+        ws.on("error", onError);
+        ws.on("close", onClose);
+
+        // Connection timeout (covers hangs during upgrade / network issues)
+        timeout = setTimeout(() => {
+            settle(() => {
+                try {
+                    ws.close();
+                } catch {
+                    // ignore
+                }
+                reject(new Error("WebSocket connection timeout after 30s"));
+            });
+        }, 30000);
+    });
 }
 
 /**
@@ -690,15 +713,18 @@ async function handleDisconnect(): Promise<void> {
         resubscribeInterval = null;
     }
 
-    // Properly destroy the provider to close the WebSocket connection
-    if (provider) {
-        provider.removeAllListeners();
+    // Properly destroy the provider to close the WebSocket connection.
+    // Set provider = null BEFORE destroying to avoid ws 'close' handlers
+    // re-entering handleDisconnect while we're tearing down.
+    const currentProvider = provider;
+    provider = null;
+    if (currentProvider) {
+        currentProvider.removeAllListeners();
         try {
-            await provider.destroy();
+            await currentProvider.destroy();
         } catch (err) {
             logger.debug({ err }, "Error destroying provider during disconnect");
         }
-        provider = null;
     }
 
     if (isRunning) {
