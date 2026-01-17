@@ -23,8 +23,8 @@ export const DEFAULT_GUARDRAILS: Guardrails = {
     minDepthMultiplierBps: 12_500, // 1.25x = 12500 bps
 
     // Timing
-    decisionLatencyMs: 750,
-    jitterMsMax: 250,
+    decisionLatencyMs: 0,
+    jitterMsMax: 0,
 
     // Market lifecycle
     noNewOpensWithinMinutesToClose: 30,
@@ -93,7 +93,7 @@ async function loadGlobalConfig(): Promise<{ guardrails: Guardrails; sizing: Siz
     let guardrails = DEFAULT_GUARDRAILS;
     if (guardrailRow) {
         try {
-            const parsed = GuardrailsSchema.parse(guardrailRow.configJson);
+            const parsed = GuardrailsSchema.partial().parse(guardrailRow.configJson);
             guardrails = { ...DEFAULT_GUARDRAILS, ...parsed };
         } catch (err) {
             logger.warn({ err }, "Failed to parse global guardrails, using defaults");
@@ -108,7 +108,7 @@ async function loadGlobalConfig(): Promise<{ guardrails: Guardrails; sizing: Siz
     let sizing = DEFAULT_SIZING;
     if (sizingRow) {
         try {
-            const parsed = SizingSchema.parse(sizingRow.configJson);
+            const parsed = SizingSchema.partial().parse(sizingRow.configJson);
             sizing = { ...DEFAULT_SIZING, ...parsed };
         } catch (err) {
             logger.warn({ err }, "Failed to parse global sizing, using defaults");

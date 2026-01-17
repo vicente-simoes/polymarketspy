@@ -1,5 +1,5 @@
 /**
- * Event aggregator for grouping fills within a 2000ms window.
+ * Event aggregator for grouping fills within a short window.
  *
  * This module buffers incoming events and flushes them as groups after
  * the aggregation window expires. Groups are keyed by:
@@ -155,12 +155,6 @@ async function flushTradeGroup(aggKey: string): Promise<void> {
 
     const queueGroup = serializeEventGroup(group);
 
-    // Enqueue for per-user executable simulation
-    await queues.copyAttemptUser.add("copy-attempt-user", {
-        group: queueGroup,
-        portfolioScope: "EXEC_USER",
-    });
-
     // Enqueue for global executable simulation
     await queues.copyAttemptGlobal.add("copy-attempt-global", {
         group: queueGroup,
@@ -224,12 +218,6 @@ async function flushActivityGroup(aggKey: string): Promise<void> {
     );
 
     const queueGroup = serializeEventGroup(group);
-
-    // Enqueue for per-user executable simulation
-    await queues.copyAttemptUser.add("copy-attempt-user", {
-        group: queueGroup,
-        portfolioScope: "EXEC_USER",
-    });
 
     // Enqueue for global executable simulation
     await queues.copyAttemptGlobal.add("copy-attempt-global", {

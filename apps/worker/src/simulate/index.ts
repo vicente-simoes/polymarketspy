@@ -2,7 +2,7 @@
  * Simulation module for event aggregation and executable copy trading.
  *
  * This module handles:
- * - Event aggregation (grouping fills within 2000ms windows)
+ * - Event aggregation (grouping fills within short windows)
  * - Executable simulation (per-user and global)
  * - Copy attempt decision making with guardrails
  * - Ledger application for executable portfolios
@@ -42,4 +42,4 @@ export { executeCopyAttempt, executeTradeGroup, executeActivityGroup, type Execu
 
 // Workers
 export { groupEventsWorker, startGroupEventsWorker } from "./processor.js";
-export { copyAttemptUserWorker, copyAttemptGlobalWorker, startCopyAttemptWorkers } from "./workers.js";
+export { copyAttemptGlobalWorker, startCopyAttemptWorkers } from "./workers.js";

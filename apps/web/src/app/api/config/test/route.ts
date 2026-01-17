@@ -22,7 +22,7 @@ export async function POST(request: Request) {
         if (scope === "GLOBAL") {
             where.portfolioScope = "EXEC_GLOBAL"
         } else {
-            where.portfolioScope = "EXEC_USER"
+            where.portfolioScope = "EXEC_GLOBAL"
             if (userId) {
                 where.followedUserId = userId
             }

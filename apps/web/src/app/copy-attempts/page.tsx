@@ -22,6 +22,9 @@ interface CopyAttemptRow {
     createdAt: string
     marketId?: string | null
     assetId?: string | null
+    marketTitle?: string | null
+    marketSlug?: string | null
+    outcomeLabel?: string | null
 }
 
 export default function CopyAttemptsPage() {
@@ -58,7 +61,8 @@ export default function CopyAttemptsPage() {
         if (!attempts) return []
         return attempts.filter((attempt) => {
             const userField = `${attempt.followedUser?.label ?? ""} ${attempt.followedUserId ?? ""}`.toLowerCase()
-            const marketField = `${attempt.marketId ?? ""} ${attempt.assetId ?? ""}`.toLowerCase()
+            const marketField =
+                `${attempt.marketId ?? ""} ${attempt.assetId ?? ""} ${attempt.marketTitle ?? ""} ${attempt.outcomeLabel ?? ""}`.toLowerCase()
             const reasonField = (attempt.reasonCodes ?? []).join(" ").toLowerCase()
             const matchesUser = !userQuery || userField.includes(userQuery)
             const matchesMarket = !marketQuery || marketField.includes(marketQuery)
@@ -134,7 +138,7 @@ export default function CopyAttemptsPage() {
                                 </div>
                                 <div className="flex flex-col gap-2">
                                     <label className="text-xs uppercase tracking-wider text-[#6f6f6f]">
-                                        Market / Asset
+                                        Market / Outcome
                                     </label>
                                     <input
                                         value={filters.market}
@@ -144,7 +148,7 @@ export default function CopyAttemptsPage() {
                                                 market: event.target.value
                                             }))
                                         }
-                                        placeholder="Market or asset id"
+                                        placeholder="Market, outcome, or id"
                                         className="h-10 rounded-lg border border-[#27272A] bg-[#111111] px-3 text-sm text-white placeholder:text-[#6f6f6f] focus:outline-none focus:ring-2 focus:ring-[#86efac]"
                                     />
                                 </div>
@@ -268,10 +272,10 @@ export default function CopyAttemptsPage() {
                                                             </td>
                                                             <td className="py-4 px-3 text-sm text-white">
                                                                 <div className="font-medium">
-                                                                    {attempt.marketId ?? "Unknown"}
+                                                                    {attempt.marketTitle ?? attempt.marketId ?? "Unknown"}
                                                                 </div>
                                                                 <div className="text-xs text-[#6f6f6f] font-mono">
-                                                                    {attempt.assetId ?? "Asset N/A"}
+                                                                    {attempt.outcomeLabel ?? attempt.assetId ?? "Asset N/A"}
                                                                 </div>
                                                             </td>
                                                             <td className="py-4 px-3 text-right text-sm text-white font-mono">

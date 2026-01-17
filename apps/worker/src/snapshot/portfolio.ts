@@ -3,7 +3,6 @@
  *
  * Every minute, compute snapshots for:
  * - Global executable (EXEC_GLOBAL)
- * - Each per-user executable (EXEC_USER)
  * - Each per-user shadow (SHADOW_USER)
  *
  * Uses incremental computation:
@@ -15,6 +14,7 @@ import { PortfolioScope } from "@prisma/client";
 import { prisma } from "../db/prisma.js";
 import { createChildLogger } from "../log/logger.js";
 import { getLatestPrices } from "./prices.js";
+import { getSystemConfig } from "../config/system.js";
 
 const logger = createChildLogger({ module: "portfolio-snapshot" });
 
@@ -54,7 +54,9 @@ async function getPositions(
         by: ["assetId", "marketId"],
         where: {
             portfolioScope: scope,
-            followedUserId: scope === PortfolioScope.EXEC_GLOBAL ? null : followedUserId,
+            ...(scope === PortfolioScope.EXEC_GLOBAL && followedUserId === null
+                ? {}
+                : { followedUserId }),
             assetId: { not: null },
         },
         _sum: {
@@ -96,7 +98,9 @@ async function getCashBalance(
     const result = await prisma.ledgerEntry.aggregate({
         where: {
             portfolioScope: scope,
-            followedUserId: scope === PortfolioScope.EXEC_GLOBAL ? null : followedUserId,
+            ...(scope === PortfolioScope.EXEC_GLOBAL && followedUserId === null
+                ? {}
+                : { followedUserId }),
         },
         _sum: {
             cashDeltaMicros: true,
@@ -119,7 +123,9 @@ async function getRealizedPnl(
     const result = await prisma.ledgerEntry.aggregate({
         where: {
             portfolioScope: scope,
-            followedUserId: scope === PortfolioScope.EXEC_GLOBAL ? null : followedUserId,
+            ...(scope === PortfolioScope.EXEC_GLOBAL && followedUserId === null
+                ? {}
+                : { followedUserId }),
             assetId: null,
             entryType: { in: ["MERGE", "SPLIT", "SETTLEMENT"] },
         },
@@ -168,9 +174,17 @@ async function computePortfolioSnapshot(
             totalUnrealizedPnlMicros += positionValueMicros - pos.costBasisMicros;
         }
 
-        // Get initial capital (default for v0)
-        // TODO: In future, could be configurable per portfolio
-        const initialCashMicros = BigInt(100_000_000_000); // Default 100k USDC
+        // Initial capital: global EXEC starts from configured bankroll; user-attribution
+        // slices start from 0 (their slice net value).
+        let initialCashMicros = BigInt(100_000_000_000); // Default 100k USDC
+        if (scope === PortfolioScope.EXEC_GLOBAL) {
+            if (followedUserId !== null) {
+                initialCashMicros = BigInt(0);
+            } else {
+                const system = await getSystemConfig();
+                initialCashMicros = BigInt(system.initialBankrollMicros);
+            }
+        }
 
         // Get cash balance
         const cashMicros = await getCashBalance(scope, followedUserId, initialCashMicros);
@@ -270,9 +284,9 @@ async function computeAllSnapshots(): Promise<void> {
             select: { id: true },
         });
 
-        // 3. Per-user executable and shadow
+        // 3. Per-user shadow
         for (const user of followedUsers) {
-            await computePortfolioSnapshot(PortfolioScope.EXEC_USER, user.id, bucketTime);
+            await computePortfolioSnapshot(PortfolioScope.EXEC_GLOBAL, user.id, bucketTime);
             await computePortfolioSnapshot(PortfolioScope.SHADOW_USER, user.id, bucketTime);
         }
 
@@ -332,7 +346,10 @@ export async function getLatestSnapshot(
     return prisma.portfolioSnapshot.findFirst({
         where: {
             portfolioScope: scope,
-            followedUserId: scope === PortfolioScope.EXEC_GLOBAL ? null : followedUserId,
+            followedUserId:
+                scope === PortfolioScope.EXEC_GLOBAL && followedUserId === null
+                    ? null
+                    : followedUserId,
         },
         orderBy: { bucketTime: "desc" },
     });

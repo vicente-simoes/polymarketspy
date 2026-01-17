@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button"
 import { useToast } from "@/components/ui/use-toast"
 import { fetcher } from "@/lib/fetcher"
 import {
+    Activity,
     AlertTriangle,
     Beaker,
     ClipboardList,
@@ -20,6 +21,9 @@ import {
 interface GlobalConfigResponse {
     guardrails: Record<string, any>
     sizing: Record<string, any>
+    system?: {
+        initialBankrollMicros?: number
+    }
 }
 
 interface UserConfigResponse {
@@ -67,8 +71,8 @@ const guardrailsDefaults = {
     maxSpreadMicros: 20_000,
     minDepthMultiplierBps: 12_500,
     noNewOpensWithinMinutesToClose: 30,
-    decisionLatencyMs: 750,
-    jitterMsMax: 250,
+    decisionLatencyMs: 0,
+    jitterMsMax: 0,
     maxTotalExposureBps: 7000,
     maxExposurePerMarketBps: 500,
     maxExposurePerUserBps: 2000,
@@ -82,6 +86,10 @@ const sizingDefaults = {
     minTradeNotionalMicros: 5_000_000,
     maxTradeNotionalMicros: 250_000_000,
     maxTradeBankrollBps: 75
+}
+
+const systemDefaults = {
+    initialBankrollMicros: 100_000_000
 }
 
 const toFormValue = (
@@ -362,11 +370,16 @@ export default function ConfigPage() {
     )
     const [userSizingForm, setUserSizingForm] = useState<SizingForm>(sizingToForm({}, true))
     const [globalInitialized, setGlobalInitialized] = useState(false)
+    const [systemInitialized, setSystemInitialized] = useState(false)
     const [userInitialized, setUserInitialized] = useState(false)
     const [savingGlobal, setSavingGlobal] = useState(false)
+    const [savingSystem, setSavingSystem] = useState(false)
     const [savingUser, setSavingUser] = useState(false)
     const [testResult, setTestResult] = useState<TestConfigResult | null>(null)
     const [testLoading, setTestLoading] = useState(false)
+    const [initialBankrollUsd, setInitialBankrollUsd] = useState(
+        String(systemDefaults.initialBankrollMicros / 1_000_000)
+    )
 
     useEffect(() => {
         if (!selectedUserId && users?.length) {
@@ -384,6 +397,18 @@ export default function ConfigPage() {
             setGlobalInitialized(true)
         }
     }, [globalConfig, globalInitialized])
+
+    useEffect(() => {
+        if (globalConfig && !systemInitialized) {
+            const microsRaw = globalConfig.system?.initialBankrollMicros
+            const micros =
+                typeof microsRaw === "number" && Number.isFinite(microsRaw)
+                    ? microsRaw
+                    : systemDefaults.initialBankrollMicros
+            setInitialBankrollUsd(String(micros / 1_000_000))
+            setSystemInitialized(true)
+        }
+    }, [globalConfig, systemInitialized])
 
     useEffect(() => {
         if (userConfig && !userInitialized) {
@@ -455,6 +480,34 @@ export default function ConfigPage() {
             })
         } finally {
             setSavingGlobal(false)
+        }
+    }
+
+    const handleSaveInitialBankroll = async () => {
+        try {
+            setSavingSystem(true)
+            const parsed = Number.parseFloat(initialBankrollUsd)
+            if (!Number.isFinite(parsed) || parsed < 0) {
+                throw new Error("Invalid bankroll")
+            }
+            const initialBankrollMicros = Math.round(parsed * 1_000_000)
+
+            await fetch("/api/config/global", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ system: { initialBankrollMicros } })
+            })
+            setSystemInitialized(false)
+            await mutateGlobal()
+            toast({ title: "Saved", description: "Initial bankroll updated." })
+        } catch (error) {
+            toast({
+                variant: "destructive",
+                title: "Save failed",
+                description: "Check bankroll value for invalid numbers."
+            })
+        } finally {
+            setSavingSystem(false)
         }
     }
 
@@ -736,6 +789,36 @@ export default function ConfigPage() {
                             </div>
 
                             <div className="flex flex-col gap-6">
+                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
+                                    <div className="flex items-center justify-between gap-4">
+                                        <div>
+                                            <div className="text-sm text-[#6f6f6f] flex items-center gap-2">
+                                                <Activity className="h-4 w-4 text-[#86efac]" />
+                                                Global Bankroll
+                                            </div>
+                                            <div className="text-xs text-[#6f6f6f]">
+                                                Starting cash for the global execution portfolio.
+                                            </div>
+                                        </div>
+                                        <Button
+                                            onClick={handleSaveInitialBankroll}
+                                            disabled={savingSystem}
+                                            className="bg-[#86efac] text-black hover:bg-[#4ade80]"
+                                        >
+                                            {savingSystem ? "Saving..." : "Save Bankroll"}
+                                        </Button>
+                                    </div>
+                                    <div className="mt-4 grid grid-cols-1 gap-4">
+                                        <Field
+                                            label="Initial Bankroll"
+                                            value={initialBankrollUsd}
+                                            onChange={setInitialBankrollUsd}
+                                            suffix="USDC"
+                                            helper="Used for EXEC_GLOBAL cash + equity."
+                                        />
+                                    </div>
+                                </div>
+
                                 <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
                                     <div className="flex items-center justify-between gap-4">
                                         <div>

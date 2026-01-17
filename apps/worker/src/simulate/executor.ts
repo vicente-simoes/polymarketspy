@@ -14,6 +14,7 @@ import { TradeSide, PortfolioScope, CopyDecision } from "@prisma/client";
 import { ReasonCodes, type ReasonCode } from "@copybot/shared";
 import { prisma } from "../db/prisma.js";
 import { createChildLogger } from "../log/logger.js";
+import { getSystemConfig } from "../config/system.js";
 import { getGlobalConfig, getUserConfig } from "./config.js";
 import { computeTargetNotional, computeTargetShares } from "./sizing.js";
 import { simulateBookFills, type SimulationResult } from "./book.js";
@@ -70,7 +71,12 @@ async function getPortfolioState(
         orderBy: { bucketTime: "desc" },
     });
 
-    const equityMicros = latestSnapshot?.equityMicros ?? BigInt(100_000_000_000); // Default 100k USDC
+    const system = scope === PortfolioScope.EXEC_GLOBAL ? await getSystemConfig() : null;
+    const defaultEquityMicros =
+        scope === PortfolioScope.EXEC_GLOBAL && system
+            ? BigInt(system.initialBankrollMicros)
+            : BigInt(100_000_000_000); // Default 100k USDC
+    const equityMicros = latestSnapshot?.equityMicros ?? defaultEquityMicros;
     const peakEquityMicros = equityMicros; // TODO: Track actual peak
 
     // Compute total exposure from positions
@@ -78,7 +84,7 @@ async function getPortfolioState(
         by: ["assetId", "marketId"],
         where: {
             portfolioScope: scope,
-            followedUserId: scope === PortfolioScope.EXEC_GLOBAL ? null : followedUserId,
+            ...(scope === PortfolioScope.EXEC_GLOBAL ? {} : { followedUserId }),
             assetId: { not: null },
         },
         _sum: {
@@ -89,16 +95,29 @@ async function getPortfolioState(
     let totalExposureMicros = BigInt(0);
     const exposureByMarket = new Map<string, bigint>();
 
+    const assetIds = [
+        ...new Set(
+            positions
+                .map((p) => p.assetId)
+                .filter((id): id is string => Boolean(id))
+        ),
+    ];
+    const priceSnapshots = assetIds.length
+        ? await prisma.marketPriceSnapshot.findMany({
+              where: { assetId: { in: assetIds } },
+              orderBy: { bucketTime: "desc" },
+              distinct: ["assetId"],
+              select: { assetId: true, midpointPriceMicros: true },
+          })
+        : [];
+    const priceByAsset = new Map<string, number>(
+        priceSnapshots.map((snap) => [snap.assetId, snap.midpointPriceMicros])
+    );
+
     for (const pos of positions) {
         if (!pos.assetId || !pos._sum.shareDeltaMicros) continue;
 
-        // Get latest price for this asset
-        const priceSnapshot = await prisma.marketPriceSnapshot.findFirst({
-            where: { assetId: pos.assetId },
-            orderBy: { bucketTime: "desc" },
-        });
-
-        const priceMicros = priceSnapshot?.midpointPriceMicros ?? 500_000; // Default 0.50
+        const priceMicros = priceByAsset.get(pos.assetId) ?? 500_000; // Default 0.50
         const positionValue =
             (pos._sum.shareDeltaMicros * BigInt(priceMicros)) / BigInt(1_000_000);
 
@@ -115,9 +134,29 @@ async function getPortfolioState(
     // Get per-user exposure (for global scope)
     const exposureByUser = new Map<string, bigint>();
     if (scope === PortfolioScope.EXEC_GLOBAL) {
-        // Group by followedUserId from copy attempts
-        // For now, we'll compute this from the positions indirectly
-        // TODO: Implement proper per-user exposure tracking
+        const perUserPositions = await prisma.ledgerEntry.groupBy({
+            by: ["followedUserId", "assetId"],
+            where: {
+                portfolioScope: scope,
+                followedUserId: { not: null },
+                assetId: { not: null },
+            },
+            _sum: {
+                shareDeltaMicros: true,
+            },
+        });
+
+        for (const pos of perUserPositions) {
+            if (!pos.followedUserId || !pos.assetId || !pos._sum.shareDeltaMicros) continue;
+
+            const priceMicros = priceByAsset.get(pos.assetId) ?? 500_000;
+            const positionValue =
+                (pos._sum.shareDeltaMicros * BigInt(priceMicros)) / BigInt(1_000_000);
+            const absExposure = positionValue < BigInt(0) ? -positionValue : positionValue;
+
+            const current = exposureByUser.get(pos.followedUserId) ?? BigInt(0);
+            exposureByUser.set(pos.followedUserId, current + absExposure);
+        }
     }
 
     // TODO: Compute actual daily/weekly PnL from ledger
@@ -459,8 +498,9 @@ export async function executeCopyAttempt(
     group: EventGroup,
     portfolioScope: PortfolioScope
 ): Promise<ExecutionResult> {
-    const followedUserId =
-        portfolioScope === PortfolioScope.EXEC_GLOBAL ? null : group.followedUserId;
+    // Single global execution portfolio, but we still attribute every attempt
+    // to the followed user that triggered it (for overrides + reporting).
+    const followedUserId = group.followedUserId;
 
     if (group.type === "trade") {
         return executeTradeGroup(group, portfolioScope, followedUserId);

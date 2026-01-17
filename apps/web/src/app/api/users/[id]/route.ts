@@ -32,7 +32,7 @@ export async function GET(
         const snapshotRows = await prisma.portfolioSnapshot.findMany({
             where: {
                 followedUserId: id,
-                portfolioScope: { in: ["SHADOW_USER", "EXEC_USER"] }
+                portfolioScope: { in: ["SHADOW_USER", "EXEC_GLOBAL"] }
             },
             orderBy: { bucketTime: "desc" },
             take: 180
@@ -55,7 +55,7 @@ export async function GET(
                 if (!latestShadow || snapshot.bucketTime > latestShadow.bucketTime) {
                     latestShadow = snapshot
                 }
-            } else if (snapshot.portfolioScope === "EXEC_USER") {
+            } else if (snapshot.portfolioScope === "EXEC_GLOBAL") {
                 execByTime.set(ts, Number(snapshot.equityMicros) / 1_000_000)
                 if (!latestExec || snapshot.bucketTime > latestExec.bucketTime) {
                     latestExec = snapshot
@@ -92,19 +92,19 @@ export async function GET(
             execPositionsRaw
         ] = await Promise.all([
             prisma.copyAttempt.count({
-                where: { followedUserId: id, portfolioScope: "EXEC_USER" }
+                where: { followedUserId: id, portfolioScope: "EXEC_GLOBAL" }
             }),
             prisma.copyAttempt.count({
                 where: {
                     followedUserId: id,
-                    portfolioScope: "EXEC_USER",
+                    portfolioScope: "EXEC_GLOBAL",
                     decision: "EXECUTE"
                 }
             }),
             prisma.copyAttempt.count({
                 where: {
                     followedUserId: id,
-                    portfolioScope: "EXEC_USER",
+                    portfolioScope: "EXEC_GLOBAL",
                     decision: "EXECUTE",
                     filledRatioBps: { gt: 0, lt: 10000 }
                 }
@@ -120,7 +120,7 @@ export async function GET(
             prisma.copyAttempt.findMany({
                 where: {
                     followedUserId: id,
-                    portfolioScope: "EXEC_USER",
+                    portfolioScope: "EXEC_GLOBAL",
                     decision: "EXECUTE",
                     vwapPriceMicros: { not: null }
                 },
@@ -145,7 +145,7 @@ export async function GET(
             prisma.copyAttempt.findMany({
                 where: {
                     followedUserId: id,
-                    portfolioScope: "EXEC_USER",
+                    portfolioScope: "EXEC_GLOBAL",
                     decision: "SKIP"
                 },
                 select: { reasonCodes: true },
@@ -163,7 +163,7 @@ export async function GET(
                 take: 30
             }),
             prisma.copyAttempt.findMany({
-                where: { followedUserId: id, portfolioScope: "EXEC_USER" },
+                where: { followedUserId: id, portfolioScope: "EXEC_GLOBAL" },
                 orderBy: { createdAt: "desc" },
                 take: 30
             }),
@@ -182,7 +182,7 @@ export async function GET(
             }),
             prisma.ledgerEntry.groupBy({
                 by: ["assetId"],
-                where: { portfolioScope: "EXEC_USER", followedUserId: id },
+                where: { portfolioScope: "EXEC_GLOBAL", followedUserId: id },
                 _sum: {
                     shareDeltaMicros: true,
                     cashDeltaMicros: true
@@ -280,18 +280,23 @@ export async function GET(
             ...execPositionsRaw.map((row) => row.assetId)
         ].filter((assetId): assetId is string => Boolean(assetId))
 
-        const assets = assetIds.length
-            ? await prisma.outcomeAsset.findMany({
-                  where: { id: { in: assetIds } },
-                  include: { market: true }
+        const tokenMetadata = assetIds.length
+            ? await prisma.tokenMetadataCache.findMany({
+                  where: { tokenId: { in: assetIds } },
+                  select: {
+                      tokenId: true,
+                      marketTitle: true,
+                      outcomeLabel: true
+                  }
               })
             : []
+        const tokenMetadataMap = new Map(tokenMetadata.map((meta) => [meta.tokenId, meta]))
 
         const formatPositions = (rows: typeof shadowPositionsRaw) =>
             rows
                 .filter((row) => row.assetId)
                 .map((row) => {
-                    const asset = assets.find((a) => a.id === row.assetId)
+                    const meta = tokenMetadataMap.get(row.assetId!)
                     const shares = Number(row._sum.shareDeltaMicros ?? 0) / 1_000_000
                     const netCashFlow = Number(row._sum.cashDeltaMicros ?? 0) / 1_000_000
 
@@ -299,8 +304,8 @@ export async function GET(
                         assetId: row.assetId,
                         shares,
                         invested: -netCashFlow,
-                        marketTitle: asset?.market.conditionId || "Unknown Market",
-                        outcome: asset?.outcome || "Unknown"
+                        marketTitle: meta?.marketTitle || "Unknown Market",
+                        outcome: meta?.outcomeLabel || "Unknown"
                     }
                 })
 

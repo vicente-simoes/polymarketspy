@@ -3,6 +3,9 @@ import { getServerSession } from "next-auth"
 import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import prisma from "@/lib/prisma"
 
+const SYSTEM_CONFIG_KEY = "system:config"
+const DEFAULT_INITIAL_BANKROLL_MICROS = 100_000_000 // $100
+
 export async function POST(request: Request) {
     const session = await getServerSession(authOptions)
     if (!session) {
@@ -11,7 +14,7 @@ export async function POST(request: Request) {
 
     try {
         const json = await request.json()
-        const { guardrails, sizing } = json
+        const { guardrails, sizing, system } = json
 
         // Update Global Guardrails
         if (guardrails) {
@@ -56,6 +59,38 @@ export async function POST(request: Request) {
             }
         }
 
+        // Update System Config
+        if (system && typeof system === "object") {
+            const initialBankrollMicrosRaw = (system as any).initialBankrollMicros
+            const initialBankrollMicros =
+                typeof initialBankrollMicrosRaw === "number" &&
+                Number.isFinite(initialBankrollMicrosRaw)
+                    ? Math.max(0, Math.floor(initialBankrollMicrosRaw))
+                    : null
+
+            if (initialBankrollMicros !== null) {
+                const existing = await prisma.systemCheckpoint.findUnique({
+                    where: { key: SYSTEM_CONFIG_KEY }
+                })
+                const existingJson = (existing?.valueJson || {}) as Record<string, any>
+                const nextJson = {
+                    ...existingJson,
+                    initialBankrollMicros
+                }
+
+                await prisma.systemCheckpoint.upsert({
+                    where: { key: SYSTEM_CONFIG_KEY },
+                    create: {
+                        key: SYSTEM_CONFIG_KEY,
+                        valueJson: nextJson
+                    },
+                    update: {
+                        valueJson: nextJson
+                    }
+                })
+            }
+        }
+
         return NextResponse.json({ success: true })
     } catch (error) {
         console.error("Failed to update global config:", error)
@@ -77,9 +112,22 @@ export async function GET() {
             where: { scope: "GLOBAL" }
         })
 
+        const systemRow = await prisma.systemCheckpoint.findUnique({
+            where: { key: SYSTEM_CONFIG_KEY }
+        })
+        const systemJson = (systemRow?.valueJson || {}) as Record<string, any>
+        const initialBankrollMicros =
+            typeof systemJson.initialBankrollMicros === "number" &&
+            Number.isFinite(systemJson.initialBankrollMicros)
+                ? Math.max(0, Math.floor(systemJson.initialBankrollMicros))
+                : DEFAULT_INITIAL_BANKROLL_MICROS
+
         return NextResponse.json({
             guardrails: guardrails?.configJson || {},
-            sizing: sizing?.configJson || {}
+            sizing: sizing?.configJson || {},
+            system: {
+                initialBankrollMicros
+            }
         })
     } catch (error) {
         console.error("Failed to fetch global config:", error)

@@ -275,7 +275,7 @@ export async function isReducingExposure(
     const result = await prisma.ledgerEntry.aggregate({
         where: {
             portfolioScope,
-            followedUserId,
+            ...(portfolioScope === PortfolioScope.EXEC_GLOBAL ? {} : { followedUserId }),
             assetId,
         },
         _sum: {

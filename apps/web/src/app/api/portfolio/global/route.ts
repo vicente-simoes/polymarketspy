@@ -24,7 +24,7 @@ export async function GET() {
                 : 1200
 
         const latestSnapshot = await prisma.portfolioSnapshot.findFirst({
-            where: { portfolioScope: "EXEC_GLOBAL" },
+            where: { portfolioScope: "EXEC_GLOBAL", followedUserId: null },
             orderBy: { bucketTime: "desc" }
         })
 
@@ -33,6 +33,7 @@ export async function GET() {
         const equityCurveSnapshots = await prisma.portfolioSnapshot.findMany({
             where: {
                 portfolioScope: "EXEC_GLOBAL",
+                followedUserId: null,
                 bucketTime: { gte: thirtyDaysAgo }
             },
             orderBy: { bucketTime: "asc" }
@@ -76,12 +77,19 @@ export async function GET() {
         const assetIds = positionsRaw
             .map((p: any) => p.assetId)
             .filter((id: any) => id !== null) as string[]
-        const assets = assetIds.length
-            ? await prisma.outcomeAsset.findMany({
-                  where: { id: { in: assetIds } },
-                  include: { market: true }
+        const tokenMetadata = assetIds.length
+            ? await prisma.tokenMetadataCache.findMany({
+                  where: { tokenId: { in: assetIds } },
+                  select: {
+                      tokenId: true,
+                      marketTitle: true,
+                      outcomeLabel: true
+                  }
               })
             : []
+        const tokenMetadataMap = new Map(
+            tokenMetadata.map((meta) => [meta.tokenId, meta])
+        )
         const priceSnapshots = assetIds.length
             ? await prisma.marketPriceSnapshot.findMany({
                   where: { assetId: { in: assetIds } },
@@ -95,7 +103,7 @@ export async function GET() {
         )
 
         const enrichedPositions = positionsRaw.map((p: any) => {
-            const asset = assets.find((a: any) => a.id === p.assetId)
+            const meta = p.assetId ? tokenMetadataMap.get(p.assetId) : null
             const shares = Number(p._sum.shareDeltaMicros) / 1_000_000
             const netCashFlow = Number(p._sum.cashDeltaMicros) / 1_000_000
             const priceMicros = p.assetId ? priceMap.get(p.assetId) : null
@@ -110,8 +118,8 @@ export async function GET() {
                 invested: -netCashFlow,
                 markPrice,
                 marketValue,
-                marketTitle: asset?.market.conditionId || "Unknown Market",
-                outcome: asset?.outcome || "Unknown"
+                marketTitle: meta?.marketTitle || "Unknown Market",
+                outcome: meta?.outcomeLabel || "Unknown"
             }
         })
 
@@ -173,7 +181,7 @@ export async function GET() {
 
         const userSnapshots = await prisma.portfolioSnapshot.findMany({
             where: {
-                portfolioScope: "EXEC_USER",
+                portfolioScope: "EXEC_GLOBAL",
                 followedUserId: { not: null }
             },
             orderBy: { bucketTime: "desc" },

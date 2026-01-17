@@ -3,6 +3,20 @@ import { getServerSession } from "next-auth"
 import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import prisma from "@/lib/prisma"
 
+function parseTradeGroupKey(groupKey: string): {
+    followedUserId: string | null
+    tokenId: string | null
+} {
+    // Format (trade): <followedUserId>:<tokenId>:<side>:<windowStartIso>
+    const parts = groupKey.split(":")
+    if (parts.length < 4) return { followedUserId: null, tokenId: null }
+    const followedUserId = parts[0] ?? null
+    const tokenId = parts[1] ?? null
+    const side = parts[2]
+    if (side !== "BUY" && side !== "SELL") return { followedUserId: null, tokenId: null }
+    return { followedUserId, tokenId }
+}
+
 export async function GET(request: Request) {
     const session = await getServerSession(authOptions)
     if (!session) {
@@ -16,6 +30,7 @@ export async function GET(request: Request) {
 
     try {
         const where = {
+            portfolioScope: "EXEC_GLOBAL" as const,
             ...(decision && { decision: decision as any }),
         }
 
@@ -56,15 +71,76 @@ export async function GET(request: Request) {
 
         const enrichedAttempts = attempts.map((attempt) => {
             const ledger = ledgerMap.get(`copy:${attempt.id}`)
+            const parsed = parseTradeGroupKey(attempt.groupKey)
+            const derivedFollowedUserId = attempt.followedUserId ?? parsed.followedUserId
+            const derivedAssetId = ledger?.assetId ?? parsed.tokenId ?? null
             return {
                 ...attempt,
+                followedUserId: derivedFollowedUserId,
                 marketId: ledger?.marketId ?? null,
-                assetId: ledger?.assetId ?? null
+                assetId: derivedAssetId
             }
         })
 
+        const missingFollowedUserIds = Array.from(
+            new Set(
+                enrichedAttempts
+                    .filter((attempt) => !attempt.followedUser?.label && attempt.followedUserId)
+                    .map((attempt) => attempt.followedUserId)
+                    .filter((id): id is string => Boolean(id))
+            )
+        )
+        const followedUsers = missingFollowedUserIds.length
+            ? await prisma.followedUser.findMany({
+                  where: { id: { in: missingFollowedUserIds } },
+                  select: { id: true, label: true }
+              })
+            : []
+        const followedUserMap = new Map(followedUsers.map((u) => [u.id, u.label]))
+
+        const tokenIds = Array.from(
+            new Set(
+                enrichedAttempts
+                    .map((attempt) => attempt.assetId)
+                    .filter((tokenId): tokenId is string => Boolean(tokenId))
+            )
+        )
+
+        const tokenMetadata = tokenIds.length
+            ? await prisma.tokenMetadataCache.findMany({
+                  where: { tokenId: { in: tokenIds } },
+                  select: {
+                      tokenId: true,
+                      marketTitle: true,
+                      marketSlug: true,
+                      outcomeLabel: true
+                  }
+              })
+            : []
+
+        const tokenMetadataMap = new Map(
+            tokenMetadata.map((meta) => [meta.tokenId, meta])
+        )
+
         const serializedAttempts = enrichedAttempts.map((attempt) => ({
+            marketTitle:
+                attempt.assetId
+                    ? tokenMetadataMap.get(attempt.assetId)?.marketTitle ?? null
+                    : null,
+            marketSlug:
+                attempt.assetId
+                    ? tokenMetadataMap.get(attempt.assetId)?.marketSlug ?? null
+                    : null,
+            outcomeLabel:
+                attempt.assetId
+                    ? tokenMetadataMap.get(attempt.assetId)?.outcomeLabel ?? null
+                    : null,
             ...attempt,
+            followedUser: attempt.followedUser?.label
+                ? attempt.followedUser
+                : attempt.followedUserId
+                  ? { label: followedUserMap.get(attempt.followedUserId) ?? null }
+                  : null,
             targetNotionalMicros: attempt.targetNotionalMicros.toString(),
             filledNotionalMicros: attempt.filledNotionalMicros.toString(),
             fills: attempt.fills.map((fill) => ({

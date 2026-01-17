@@ -1,16 +1,16 @@
 /**
  * Types for event aggregation and executable simulation.
  *
- * Aggregation groups multiple fills within a 2000ms window into a single
+ * Aggregation groups multiple fills within a short window into a single
  * copy attempt to avoid treating many tiny fills as separate orders.
  */
 
 import { TradeSide, ActivityType } from "@prisma/client";
 
 /**
- * Aggregation window in milliseconds (per planning.md).
+ * Aggregation window in milliseconds.
  */
-export const AGGREGATION_WINDOW_MS = 2000;
+export const AGGREGATION_WINDOW_MS = 250;
 
 /**
  * Pending event in the aggregation buffer.

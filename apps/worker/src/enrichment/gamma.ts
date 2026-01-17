@@ -143,6 +143,61 @@ export async function fetchTokenMetadata(
         return null;
     };
 
+    const extractMetadataFromMarkets = (
+        markets: GammaMarket[],
+        requestedTokenIds: string[]
+    ) => {
+        for (const market of markets) {
+            const conditionId = market.conditionId ?? market.condition_id ?? null;
+            if (!conditionId) continue;
+
+            const marketId = market.id ?? null;
+            const marketSlug = market.slug ?? null;
+
+            const closeTimeRaw =
+                market.endDate ?? market.endDateIso ?? market.end_date_iso ?? null;
+            const closeTime = closeTimeRaw ? new Date(closeTimeRaw) : null;
+
+            const tokenOutcomeMap = new Map<string, string>();
+
+            for (const token of market.tokens ?? []) {
+                tokenOutcomeMap.set(token.token_id, token.outcome);
+            }
+
+            if (tokenOutcomeMap.size === 0) {
+                const clobTokenIds = parseJsonStringArray(market.clobTokenIds);
+                const outcomes = parseJsonStringArray(market.outcomes);
+
+                if (clobTokenIds && outcomes && clobTokenIds.length === outcomes.length) {
+                    for (let idx = 0; idx < clobTokenIds.length; idx++) {
+                        const tokenId = clobTokenIds[idx];
+                        const outcomeLabel = outcomes[idx];
+                        if (tokenId && outcomeLabel) {
+                            tokenOutcomeMap.set(tokenId, outcomeLabel);
+                        }
+                    }
+                }
+            }
+
+            for (const tokenId of requestedTokenIds) {
+                const outcomeLabel = tokenOutcomeMap.get(tokenId);
+                if (!outcomeLabel) continue;
+
+                const metadata: TokenMetadata = {
+                    tokenId,
+                    conditionId,
+                    marketId,
+                    marketSlug,
+                    outcomeLabel,
+                    marketTitle: market.question,
+                    closeTime,
+                };
+
+                result.set(tokenId, metadata);
+            }
+        }
+    };
+
     try {
         // Batch to avoid URL length limits (limit to 10 at a time).
         const batchSize = 10;
@@ -151,61 +206,31 @@ export async function fetchTokenMetadata(
 
             logger.debug({ tokenCount: batch.length }, "Fetching token metadata from Gamma");
 
-            const markets = await gammaRequest(
-                "/markets",
-                GammaMarketsResponseSchema,
-                { clob_token_ids: batch }
-            );
-
-            // Extract metadata for each token
-            for (const market of markets) {
-                const conditionId =
-                    market.conditionId ?? market.condition_id ?? null;
-                if (!conditionId) continue;
-
-                const marketId = market.id ?? null;
-                const marketSlug = market.slug ?? null;
-
-                const closeTimeRaw =
-                    market.endDate ?? market.endDateIso ?? market.end_date_iso ?? null;
-                const closeTime = closeTimeRaw ? new Date(closeTimeRaw) : null;
-
-                const tokenOutcomeMap = new Map<string, string>();
-
-                for (const token of market.tokens ?? []) {
-                    tokenOutcomeMap.set(token.token_id, token.outcome);
-                }
-
-                if (tokenOutcomeMap.size === 0) {
-                    const clobTokenIds = parseJsonStringArray(market.clobTokenIds);
-                    const outcomes = parseJsonStringArray(market.outcomes);
-
-                    if (clobTokenIds && outcomes && clobTokenIds.length === outcomes.length) {
-                        for (let idx = 0; idx < clobTokenIds.length; idx++) {
-                            const tokenId = clobTokenIds[idx];
-                            const outcomeLabel = outcomes[idx];
-                            if (tokenId && outcomeLabel) {
-                                tokenOutcomeMap.set(tokenId, outcomeLabel);
-                            }
-                        }
-                    }
-                }
-
+            try {
+                const markets = await gammaRequest(
+                    "/markets",
+                    GammaMarketsResponseSchema,
+                    { clob_token_ids: batch }
+                );
+                extractMetadataFromMarkets(markets, batch);
+            } catch (err) {
+                // Gamma returns 422 for any invalid token id in the batch (all-or-nothing).
+                // Fall back to per-token requests to salvage valid metadata.
+                logger.warn(
+                    { err, tokenCount: batch.length },
+                    "Gamma batch request failed; retrying tokens individually"
+                );
                 for (const tokenId of batch) {
-                    const outcomeLabel = tokenOutcomeMap.get(tokenId);
-                    if (!outcomeLabel) continue;
-
-                    const metadata: TokenMetadata = {
-                        tokenId,
-                        conditionId,
-                        marketId,
-                        marketSlug,
-                        outcomeLabel,
-                        marketTitle: market.question,
-                        closeTime,
-                    };
-
-                    result.set(tokenId, metadata);
+                    try {
+                        const markets = await gammaRequest(
+                            "/markets",
+                            GammaMarketsResponseSchema,
+                            { clob_token_ids: [tokenId] }
+                        );
+                        extractMetadataFromMarkets(markets, [tokenId]);
+                    } catch (tokenErr) {
+                        logger.warn({ tokenErr, tokenId }, "Gamma lookup failed for token");
+                    }
                 }
             }
 

@@ -8,6 +8,7 @@ import {
     usdcToMicros,
     type PolymarketTrade,
 } from "../poly/index.js";
+import { fetchTokenMetadata } from "../enrichment/gamma.js";
 import { getLastTradeTime, setLastTradeTime } from "./checkpoint.js";
 import { queues } from "../queue/queues.js";
 import { setLastCanonicalEventTime } from "../health/server.js";
@@ -18,6 +19,49 @@ const logger = createChildLogger({ module: "trade-ingester" });
  * Source identifier for Polymarket API trades.
  */
 const SOURCE = "POLYMARKET_API";
+
+async function ensureTokenMetadataCached(tokenIds: string[]): Promise<void> {
+    const uniqueTokenIds = Array.from(new Set(tokenIds)).filter((id) => /^\d+$/.test(id));
+    if (uniqueTokenIds.length === 0) return;
+
+    const cached = await prisma.tokenMetadataCache.findMany({
+        where: { tokenId: { in: uniqueTokenIds } },
+        select: { tokenId: true, marketTitle: true },
+    });
+    const cachedSet = new Set(
+        cached.filter((c) => c.marketTitle).map((c) => c.tokenId)
+    );
+    const missing = uniqueTokenIds.filter((id) => !cachedSet.has(id));
+    if (missing.length === 0) return;
+
+    try {
+        const fetched = await fetchTokenMetadata(missing);
+        for (const [tokenId, metadata] of fetched) {
+            await prisma.tokenMetadataCache.upsert({
+                where: { tokenId },
+                create: {
+                    tokenId: metadata.tokenId,
+                    conditionId: metadata.conditionId,
+                    marketId: metadata.marketId,
+                    marketSlug: metadata.marketSlug,
+                    outcomeLabel: metadata.outcomeLabel,
+                    marketTitle: metadata.marketTitle,
+                    closeTime: metadata.closeTime,
+                },
+                update: {
+                    conditionId: metadata.conditionId,
+                    marketId: metadata.marketId,
+                    marketSlug: metadata.marketSlug,
+                    outcomeLabel: metadata.outcomeLabel,
+                    marketTitle: metadata.marketTitle,
+                    closeTime: metadata.closeTime,
+                },
+            });
+        }
+    } catch (err) {
+        logger.warn({ err }, "Failed to prefetch token metadata during trade ingest");
+    }
+}
 
 /**
  * Convert API trade to database insert data.
@@ -128,6 +172,13 @@ export async function ingestTradesForUser(
     }
 
     log.info({ count: trades.length }, "Fetched trades from API");
+
+    // Prefetch token metadata so API-caught trades show market/outcome on the dashboard.
+    await ensureTokenMetadataCached(
+        trades
+            .map((trade) => trade.assetId ?? trade.asset ?? trade.asset_id ?? null)
+            .filter((id): id is string => Boolean(id))
+    );
 
     let newCount = 0;
     let latestTime: Date | null = null;

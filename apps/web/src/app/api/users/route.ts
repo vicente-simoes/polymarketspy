@@ -27,7 +27,7 @@ export async function GET() {
         const snapshots = await prisma.portfolioSnapshot.findMany({
             where: {
                 followedUserId: { in: userIds },
-                portfolioScope: { in: ['SHADOW_USER', 'EXEC_USER'] }
+                portfolioScope: { in: ['SHADOW_USER', 'EXEC_GLOBAL'] }
             },
             orderBy: { bucketTime: 'desc' },
             distinct: ['portfolioScope', 'followedUserId']
@@ -35,7 +35,7 @@ export async function GET() {
 
         const usersWithMetrics = users.map((user: any) => {
             const shadowSnap = snapshots.find((s: any) => s.followedUserId === user.id && s.portfolioScope === 'SHADOW_USER')
-            const execSnap = snapshots.find((s: any) => s.followedUserId === user.id && s.portfolioScope === 'EXEC_USER')
+            const execSnap = snapshots.find((s: any) => s.followedUserId === user.id && s.portfolioScope === 'EXEC_GLOBAL')
 
             return {
                 ...user,
