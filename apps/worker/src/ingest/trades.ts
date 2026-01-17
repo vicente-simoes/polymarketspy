@@ -144,6 +144,27 @@ export async function ingestTradesForUser(
                     : new Date(dbData.eventTime);
             sourceId = dbData.sourceId ?? null;
 
+            if (dbData.txHash && dbData.assetId) {
+                const existingWs = await prisma.tradeEvent.findFirst({
+                    where: {
+                        source: "ONCHAIN_WS",
+                        txHash: dbData.txHash,
+                        profileWallet: walletAddress,
+                        side: dbData.side,
+                        OR: [{ rawTokenId: dbData.assetId }, { assetId: dbData.assetId }],
+                    },
+                    select: { id: true },
+                });
+
+                if (existingWs) {
+                    log.debug(
+                        { txHash: dbData.txHash, wsTradeEventId: existingWs.id },
+                        "Skipping API trade (already captured via WS)"
+                    );
+                    continue;
+                }
+            }
+
             // Track latest trade time for checkpoint
             if (!latestTime || tradeTime > latestTime) {
                 latestTime = tradeTime;
@@ -301,6 +322,27 @@ export async function ingestTradesForWalletFast(
                     ? dbData.eventTime
                     : new Date(dbData.eventTime);
             sourceId = dbData.sourceId ?? null;
+
+            if (dbData.txHash && dbData.assetId) {
+                const existingWs = await prisma.tradeEvent.findFirst({
+                    where: {
+                        source: "ONCHAIN_WS",
+                        txHash: dbData.txHash,
+                        profileWallet: walletAddress,
+                        side: dbData.side,
+                        OR: [{ rawTokenId: dbData.assetId }, { assetId: dbData.assetId }],
+                    },
+                    select: { id: true },
+                });
+
+                if (existingWs) {
+                    log.debug(
+                        { txHash: dbData.txHash, wsTradeEventId: existingWs.id },
+                        "Skipping API trade (already captured via WS)"
+                    );
+                    continue;
+                }
+            }
 
             // Check if already exists
             const existing = await prisma.tradeEvent.findFirst({

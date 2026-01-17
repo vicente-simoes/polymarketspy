@@ -31,12 +31,20 @@ const GammaTokenSchema = z.object({
  * Gamma market schema (simplified - only fields we need).
  */
 const GammaMarketSchema = z.object({
-    id: z.string().optional(), // Polymarket market ID (may not always be present)
-    condition_id: z.string(),
+    id: z.string().optional().nullable(), // Polymarket market ID
     question: z.string(), // Market title/question
-    slug: z.string().optional(),
-    end_date_iso: z.string().optional(), // Close time as ISO string
+    slug: z.string().optional().nullable(),
+
+    condition_id: z.string().optional().nullable(),
+    conditionId: z.string().optional().nullable(),
+
+    end_date_iso: z.string().optional().nullable(),
+    endDate: z.string().optional().nullable(),
+    endDateIso: z.string().optional().nullable(),
+
     tokens: z.array(GammaTokenSchema).optional(),
+    clobTokenIds: z.string().optional().nullable(),
+    outcomes: z.string().optional().nullable(),
     // There are many more fields but we only need these
 });
 
@@ -61,17 +69,25 @@ export interface TokenMetadata {
     closeTime: Date | null;
 }
 
+type QueryParamValue = string | string[];
+
 /**
  * Make a rate-limited request to Gamma API.
  */
 async function gammaRequest<T>(
     path: string,
     schema: z.ZodType<T>,
-    params?: Record<string, string>
+    params?: Record<string, QueryParamValue>
 ): Promise<T> {
     const url = new URL(path, env.GAMMA_API_BASE_URL);
     if (params) {
         for (const [key, value] of Object.entries(params)) {
+            if (Array.isArray(value)) {
+                for (const item of value) {
+                    url.searchParams.append(key, item);
+                }
+                continue;
+            }
             url.searchParams.set(key, value);
         }
     }
@@ -111,54 +127,85 @@ export async function fetchTokenMetadata(
 
     const result = new Map<string, TokenMetadata>();
 
+    const parseJsonStringArray = (value: string | null | undefined): string[] | null => {
+        if (!value) return null;
+        try {
+            const parsed = JSON.parse(value);
+            if (
+                Array.isArray(parsed) &&
+                parsed.every((item) => typeof item === "string")
+            ) {
+                return parsed;
+            }
+        } catch {
+            // ignore
+        }
+        return null;
+    };
+
     try {
-        // Gamma API accepts comma-separated token IDs
-        // Batch to avoid URL length limits (limit to 10 at a time)
+        // Batch to avoid URL length limits (limit to 10 at a time).
         const batchSize = 10;
         for (let i = 0; i < tokenIds.length; i += batchSize) {
             const batch = tokenIds.slice(i, i + batchSize);
-            const tokenIdsParam = batch.join(",");
 
             logger.debug({ tokenCount: batch.length }, "Fetching token metadata from Gamma");
 
             const markets = await gammaRequest(
                 "/markets",
                 GammaMarketsResponseSchema,
-                { clob_token_ids: tokenIdsParam }
+                { clob_token_ids: batch }
             );
 
             // Extract metadata for each token
             for (const market of markets) {
-                const tokens = market.tokens ?? [];
+                const conditionId =
+                    market.conditionId ?? market.condition_id ?? null;
+                if (!conditionId) continue;
 
-                for (const token of tokens) {
-                    // Only process tokens we requested
-                    if (!batch.includes(token.token_id)) {
-                        continue;
+                const marketId = market.id ?? null;
+                const marketSlug = market.slug ?? null;
+
+                const closeTimeRaw =
+                    market.endDate ?? market.endDateIso ?? market.end_date_iso ?? null;
+                const closeTime = closeTimeRaw ? new Date(closeTimeRaw) : null;
+
+                const tokenOutcomeMap = new Map<string, string>();
+
+                for (const token of market.tokens ?? []) {
+                    tokenOutcomeMap.set(token.token_id, token.outcome);
+                }
+
+                if (tokenOutcomeMap.size === 0) {
+                    const clobTokenIds = parseJsonStringArray(market.clobTokenIds);
+                    const outcomes = parseJsonStringArray(market.outcomes);
+
+                    if (clobTokenIds && outcomes && clobTokenIds.length === outcomes.length) {
+                        for (let idx = 0; idx < clobTokenIds.length; idx++) {
+                            const tokenId = clobTokenIds[idx];
+                            const outcomeLabel = outcomes[idx];
+                            if (tokenId && outcomeLabel) {
+                                tokenOutcomeMap.set(tokenId, outcomeLabel);
+                            }
+                        }
                     }
+                }
+
+                for (const tokenId of batch) {
+                    const outcomeLabel = tokenOutcomeMap.get(tokenId);
+                    if (!outcomeLabel) continue;
 
                     const metadata: TokenMetadata = {
-                        tokenId: token.token_id,
-                        conditionId: market.condition_id,
-                        marketId: market.id ?? null,
-                        marketSlug: market.slug ?? null,
-                        outcomeLabel: token.outcome,
+                        tokenId,
+                        conditionId,
+                        marketId,
+                        marketSlug,
+                        outcomeLabel,
                         marketTitle: market.question,
-                        closeTime: market.end_date_iso
-                            ? new Date(market.end_date_iso)
-                            : null,
+                        closeTime,
                     };
 
-                    result.set(token.token_id, metadata);
-
-                    logger.debug(
-                        {
-                            tokenId: token.token_id,
-                            outcome: token.outcome,
-                            market: market.question.slice(0, 50),
-                        },
-                        "Resolved token metadata"
-                    );
+                    result.set(tokenId, metadata);
                 }
             }
 

@@ -65,6 +65,7 @@ const ActivitySideSchema = z
  * - SPLIT: User splits collateral into YES + NO token pairs
  * - REDEEM: User redeems winning tokens for collateral after market resolution
  * - REWARD: Reward payouts
+ * - YIELD: Yield/holding rewards events
  * - CONVERSION: Token conversions
  * - MAKER_REBATE: Maker fee rebates
  */
@@ -78,7 +79,7 @@ export const PolymarketActivitySchema = z.object({
     profileImageOptimized: z.string().optional().nullable(),
 
     // Activity details
-    type: z.enum(["TRADE", "MERGE", "SPLIT", "REDEEM", "REWARD", "CONVERSION", "MAKER_REBATE"]),
+    type: z.string(),
     timestamp: z.number(), // Unix timestamp (integer)
     side: ActivitySideSchema,
 

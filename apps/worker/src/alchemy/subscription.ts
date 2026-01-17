@@ -253,6 +253,19 @@ async function insertCanonicalWsTrade(
         return { isNew: false, tradeEventId: null, followedUserId: null, profileWallet: null };
     }
 
+    if (!makerInfo && takerInfo) {
+        log.debug(
+            { maker: event.maker, taker: event.taker },
+            "Skipping taker-side fill (likely internal balancing)"
+        );
+        return {
+            isNew: false,
+            tradeEventId: null,
+            followedUserId: takerInfo.followedUserId,
+            profileWallet: takerInfo.profileWallet,
+        };
+    }
+
     // Determine which tracked wallet to attribute the trade to
     // Prefer non-proxy over proxy if both are tracked
     let matchedInfo = makerInfo ?? takerInfo;
