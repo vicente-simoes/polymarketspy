@@ -15,6 +15,9 @@ interface TradeRow {
     marketId?: string | null
     assetId?: string | null
     rawTokenId?: string | null
+    marketTitle?: string | null
+    marketSlug?: string | null
+    outcomeLabel?: string | null
     enrichmentStatus?: "PENDING" | "ENRICHED" | "FAILED"
     side: "BUY" | "SELL"
     priceMicros: number
@@ -69,7 +72,16 @@ function formatSourceBadge(trade: TradeRow): { label: string; className: string 
  * Format market/asset display with fallback for pending enrichment.
  */
 function formatMarketDisplay(trade: TradeRow): { market: string; asset: string } {
-    const { marketId, assetId, rawTokenId, enrichmentStatus } = trade
+    const { marketId, assetId, rawTokenId, marketTitle, outcomeLabel, enrichmentStatus } =
+        trade
+
+    // Prefer human-readable metadata when available (post-enrichment).
+    if (marketTitle) {
+        return {
+            market: marketTitle,
+            asset: outcomeLabel ?? assetId ?? rawTokenId ?? "N/A"
+        }
+    }
 
     // If we have market data, use it
     if (marketId) {
@@ -135,8 +147,8 @@ export default function TradesPage() {
         if (!trades || !Array.isArray(trades)) return []
         return trades.filter((trade) => {
             const userField = `${trade.userLabel ?? ""} ${trade.profileWallet ?? ""} ${trade.proxyWallet ?? ""}`.toLowerCase()
-            // Include rawTokenId in market search for WS-first trades
-            const marketField = `${trade.marketId ?? ""} ${trade.assetId ?? ""} ${trade.rawTokenId ?? ""}`.toLowerCase()
+            const marketField =
+                `${trade.marketId ?? ""} ${trade.assetId ?? ""} ${trade.rawTokenId ?? ""} ${trade.marketTitle ?? ""} ${trade.outcomeLabel ?? ""}`.toLowerCase()
             const matchesUser = !userQuery || userField.includes(userQuery)
             const matchesMarket = !marketQuery || marketField.includes(marketQuery)
             return matchesUser && matchesMarket
@@ -197,7 +209,7 @@ export default function TradesPage() {
                                 </div>
                                 <div className="flex flex-col gap-2">
                                     <label className="text-xs uppercase tracking-wider text-[#6f6f6f]">
-                                        Market / Asset
+                                        Market / Outcome
                                     </label>
                                     <input
                                         value={filters.market}
@@ -207,7 +219,7 @@ export default function TradesPage() {
                                                 market: event.target.value
                                             }))
                                         }
-                                        placeholder="Market or asset id"
+                                        placeholder="Market, outcome, or id"
                                         className="h-10 rounded-lg border border-[#27272A] bg-[#111111] px-3 text-sm text-white placeholder:text-[#6f6f6f] focus:outline-none focus:ring-2 focus:ring-[#86efac]"
                                     />
                                 </div>

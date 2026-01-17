@@ -144,6 +144,11 @@ export async function ingestTradesForUser(
                     : new Date(dbData.eventTime);
             sourceId = dbData.sourceId ?? null;
 
+            // Track latest trade time for checkpoint even if we skip inserting (e.g. already captured via WS).
+            if (!latestTime || tradeTime > latestTime) {
+                latestTime = tradeTime;
+            }
+
             if (dbData.txHash && dbData.assetId) {
                 const existingWs = await prisma.tradeEvent.findFirst({
                     where: {
@@ -153,21 +158,28 @@ export async function ingestTradesForUser(
                         side: dbData.side,
                         OR: [{ rawTokenId: dbData.assetId }, { assetId: dbData.assetId }],
                     },
-                    select: { id: true },
+                    select: { id: true, eventTime: true, detectTime: true },
                 });
 
                 if (existingWs) {
+                    // WS trades are inserted with eventTime = detectTime (no block timestamp lookup).
+                    // When the Polymarket API trade arrives, it includes the trade timestamp; use it to
+                    // backfill the WS trade's eventTime so detect lag becomes meaningful.
+                    const wsEventMs = existingWs.eventTime.getTime();
+                    const wsDetectMs = existingWs.detectTime.getTime();
+                    const apiEventMs = tradeTime.getTime();
+                    if (wsEventMs === wsDetectMs || apiEventMs < wsEventMs) {
+                        await prisma.tradeEvent.update({
+                            where: { id: existingWs.id },
+                            data: { eventTime: tradeTime },
+                        });
+                    }
                     log.debug(
                         { txHash: dbData.txHash, wsTradeEventId: existingWs.id },
                         "Skipping API trade (already captured via WS)"
                     );
                     continue;
                 }
-            }
-
-            // Track latest trade time for checkpoint
-            if (!latestTime || tradeTime > latestTime) {
-                latestTime = tradeTime;
             }
 
             // Check if already exists
@@ -332,10 +344,19 @@ export async function ingestTradesForWalletFast(
                         side: dbData.side,
                         OR: [{ rawTokenId: dbData.assetId }, { assetId: dbData.assetId }],
                     },
-                    select: { id: true },
+                    select: { id: true, eventTime: true, detectTime: true },
                 });
 
                 if (existingWs) {
+                    const wsEventMs = existingWs.eventTime.getTime();
+                    const wsDetectMs = existingWs.detectTime.getTime();
+                    const apiEventMs = tradeTime.getTime();
+                    if (wsEventMs === wsDetectMs || apiEventMs < wsEventMs) {
+                        await prisma.tradeEvent.update({
+                            where: { id: existingWs.id },
+                            data: { eventTime: tradeTime },
+                        });
+                    }
                     log.debug(
                         { txHash: dbData.txHash, wsTradeEventId: existingWs.id },
                         "Skipping API trade (already captured via WS)"

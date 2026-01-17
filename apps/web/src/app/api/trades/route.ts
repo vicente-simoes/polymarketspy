@@ -40,6 +40,30 @@ export async function GET(request: Request) {
             })
         ])
 
+        const tokenIds = Array.from(
+            new Set(
+                trades
+                    .map((trade) => trade.rawTokenId ?? trade.assetId)
+                    .filter((tokenId): tokenId is string => Boolean(tokenId))
+            )
+        )
+
+        const tokenMetadata = tokenIds.length
+            ? await prisma.tokenMetadataCache.findMany({
+                  where: { tokenId: { in: tokenIds } },
+                  select: {
+                      tokenId: true,
+                      marketTitle: true,
+                      marketSlug: true,
+                      outcomeLabel: true
+                  }
+              })
+            : []
+
+        const tokenMetadataMap = new Map(
+            tokenMetadata.map((meta) => [meta.tokenId, meta])
+        )
+
         const profileWallets = Array.from(
             new Set(trades.map((trade) => trade.profileWallet))
         )
@@ -53,6 +77,15 @@ export async function GET(request: Request) {
 
         // Convert BigInt fields to strings for JSON serialization
         const serializedTrades = trades.map((trade) => ({
+            marketTitle:
+                tokenMetadataMap.get(trade.rawTokenId ?? trade.assetId ?? "")?.marketTitle ??
+                null,
+            marketSlug:
+                tokenMetadataMap.get(trade.rawTokenId ?? trade.assetId ?? "")?.marketSlug ??
+                null,
+            outcomeLabel:
+                tokenMetadataMap.get(trade.rawTokenId ?? trade.assetId ?? "")?.outcomeLabel ??
+                null,
             ...trade,
             shareMicros: trade.shareMicros.toString(),
             notionalMicros: trade.notionalMicros.toString(),
