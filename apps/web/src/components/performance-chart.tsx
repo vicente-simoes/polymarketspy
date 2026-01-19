@@ -5,19 +5,33 @@ import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis, CartesianG
 import useSWR from 'swr'
 import { fetcher } from '@/lib/fetcher'
 
+import { useState } from 'react'
+
 export function PerformanceChart() {
-  const { data: apiData, error, isLoading } = useSWR('/api/overview', fetcher, { refreshInterval: 10000 })
+  const [timeRange, setTimeRange] = useState('1M')
+  const { data: apiData, error, isLoading } = useSWR(`/api/overview?range=${timeRange}`, fetcher, { refreshInterval: 10000 })
 
   const equityCurve = apiData?.equityCurve || []
   const hasData = equityCurve.length > 0
 
   // Fallback if no data yet (e.g. fresh DB)
-  if (isLoading) return <div className="h-[400px] flex items-center justify-center text-gray-400 bg-[#0D0D0D] rounded-2xl">Loading chart...</div>
+  if (isLoading && !hasData) return <div className="h-[400px] flex items-center justify-center text-gray-400 bg-[#0D0D0D] rounded-2xl">Loading chart...</div>
 
   // Calculate domain for Y axis to look good
   const values = equityCurve.map((d: any) => d.value)
   const minVal = values.length > 0 ? Math.min(...values) * 0.99 : 0
   const maxVal = values.length > 0 ? Math.max(...values) * 1.01 : 100
+
+  const formatXAxis = (tickItem: string) => {
+    const date = new Date(tickItem)
+    if (timeRange === '1H') {
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    }
+    if (timeRange === '1D') {
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    }
+    return date.toLocaleDateString([], { month: 'short', day: 'numeric' })
+  }
 
   return (
     <div className="flex flex-col gap-6 p-6 bg-[#0D0D0D] rounded-2xl">
@@ -34,12 +48,13 @@ export function PerformanceChart() {
 
         <div className="flex items-center gap-4 md:gap-2 lg:gap-4">
           <div className="flex items-center bg-[#1A1A1A] rounded-lg p-1">
-            {['1M'].map((period) => (
+            {['1H', '1D', '1W', '1M', 'ALL'].map((period) => (
               <button
                 key={period}
-                className={`px-3 md:px-2 lg:px-3 py-1 text-sm md:text-xs lg:text-sm rounded-md transition-colors ${period === '1M'
-                    ? 'bg-[#2A2A2A] text-white shadow-sm'
-                    : 'text-gray-400 hover:text-white'
+                onClick={() => setTimeRange(period)}
+                className={`px-3 md:px-2 lg:px-3 py-1 text-sm md:text-xs lg:text-sm rounded-md transition-colors ${timeRange === period
+                  ? 'bg-[#2A2A2A] text-white shadow-sm'
+                  : 'text-gray-400 hover:text-white'
                   }`}
               >
                 {period}
@@ -84,10 +99,16 @@ export function PerformanceChart() {
               <Tooltip
                 content={({ active, payload }) => {
                   if (active && payload && payload.length) {
+                    const dateStr = payload[0].payload.date
+                    const date = new Date(dateStr)
+                    const formattedDate = timeRange === '1H' || timeRange === '1D'
+                      ? date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                      : date.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' })
+
                     return (
                       <div className="bg-[#1A1A1A] border border-[#333] p-2 rounded-lg shadow-xl">
                         <p className="text-white font-medium">
-                          {(Number(payload[0].value)).toFixed(2)} USD <span className="text-gray-400 text-sm ml-2">{payload[0].payload.date}</span>
+                          {(Number(payload[0].value)).toFixed(2)} USD <span className="text-gray-400 text-sm ml-2">{formattedDate}</span>
                         </p>
                       </div>
                     )

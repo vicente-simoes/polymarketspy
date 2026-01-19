@@ -12,8 +12,8 @@ const DEFAULT_SYSTEM_CONFIG: SystemConfig = {
     aggregationWindowMs: AGGREGATION_WINDOW_MS,
     pollingIntervalMs: 30_000,
     backfillMinutes: 15,
-    // Default bankroll: $100
-    initialBankrollMicros: 100_000_000,
+    // Default bankroll: 0 (starts at 0 equity, positions add value, cash subtracts)
+    initialBankrollMicros: 0,
 };
 
 const CACHE_TTL_MS = 30_000;
