@@ -46,7 +46,7 @@ export default function CopyAttemptsPage() {
     } = useSWR<{ items: CopyAttemptRow[], total: number }>(
         `/api/copy-attempts?limit=${LIMIT}${currentCursor ? `&cursor=${currentCursor}` : ""}`,
         fetcher,
-        { refreshInterval: currentCursor ? 0 : 5000 }
+        { refreshInterval: currentCursor ? 0 : 5000, keepPreviousData: true }
     )
 
     const attempts = data?.items
@@ -338,13 +338,23 @@ export default function CopyAttemptsPage() {
                                 </div>
 
                                 <div className="flex justify-between items-center bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-4">
-                                    <button
-                                        onClick={() => setCursorHistory(prev => prev.slice(0, -1))}
-                                        disabled={cursorHistory.length === 0}
-                                        className="px-4 py-2 text-sm font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed bg-[#1A1A1A] text-white hover:bg-[#27272A] transition-colors"
-                                    >
-                                        Previous
-                                    </button>
+                                    <div className="flex items-center gap-2">
+                                        <button
+                                            onClick={() => setCursorHistory((prev) => prev.slice(0, -1))}
+                                            disabled={cursorHistory.length === 0}
+                                            className="px-4 py-2 text-sm font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed bg-[#1A1A1A] text-white hover:bg-[#27272A] transition-colors"
+                                        >
+                                            Previous
+                                        </button>
+                                        {cursorHistory.length > 0 && (
+                                            <button
+                                                onClick={() => setCursorHistory([])}
+                                                className="px-4 py-2 text-sm font-medium rounded-lg bg-[#1A1A1A] text-white hover:bg-[#27272A] transition-colors"
+                                            >
+                                                First Page
+                                            </button>
+                                        )}
+                                    </div>
                                     <span className="text-sm text-[#6f6f6f] font-mono">
                                         {total > 0 ? `${start}-${end} of ${total}` : '0 of 0'}
                                     </span>
