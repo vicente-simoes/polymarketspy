@@ -5,14 +5,24 @@
  * - VWAP (volume-weighted average price)
  * - Filled shares and notional
  * - Individual fill levels for ExecutableFill records
+ *
+ * IMPORTANT: This module now uses bookUtils for correct book interpretation.
+ * Never assume REST/WS arrays are sorted - always normalize first.
  */
 
 import { TradeSide } from "@prisma/client";
-import { fetchOrderBook, priceToMicros, sharesToMicros, type OrderBook } from "../poly/index.js";
+import { fetchOrderBook, type OrderBook } from "../poly/index.js";
 import { createChildLogger } from "../log/logger.js";
+import {
+    normalizeOrderBook,
+    type NormalizedBook,
+    type NormalizedLevel,
+    formatBookSummary,
+} from "./bookUtils.js";
 
 // Re-export for use by executor
 export { fetchOrderBook, type OrderBook };
+export { normalizeOrderBook, type NormalizedBook } from "./bookUtils.js";
 
 const logger = createChildLogger({ module: "book-simulation" });
 
@@ -71,6 +81,9 @@ export interface SimulationResult {
 
 /**
  * Compute book metrics (best bid/ask/mid/spread) from a pre-fetched order book.
+ *
+ * CRITICAL: This now uses max(bids) and min(asks) instead of assuming [0] is best.
+ * This fixes the bug where unsorted arrays caused "impossible" spreads like $0.01/$0.99.
  */
 export function computeBookMetrics(book: OrderBook): {
     bestBidMicros: number;
@@ -78,17 +91,23 @@ export function computeBookMetrics(book: OrderBook): {
     midPriceMicros: number;
     spreadMicros: number;
 } {
-    const bestBidMicros = book.bids.length > 0 ? priceToMicros(book.bids[0]!.price) : 0;
-    const bestAskMicros = book.asks.length > 0 ? priceToMicros(book.asks[0]!.price) : 1_000_000;
-    const midPriceMicros = Math.round((bestBidMicros + bestAskMicros) / 2);
-    const spreadMicros = bestAskMicros - bestBidMicros;
-
-    return { bestBidMicros, bestAskMicros, midPriceMicros, spreadMicros };
+    // Normalize the book - this computes correct best bid/ask using max/min
+    const normalized = normalizeOrderBook(book, "REST");
+    return {
+        bestBidMicros: normalized.bestBidMicros,
+        bestAskMicros: normalized.bestAskMicros,
+        midPriceMicros: normalized.midPriceMicros,
+        spreadMicros: normalized.spreadMicros,
+    };
 }
 
 /**
  * Simulate fills against a pre-fetched order book.
  * This is the core simulation logic that can be called with an already-fetched book.
+ *
+ * CRITICAL: This now normalizes and sorts the book before simulation.
+ * - BUY: consumes asks sorted ASCENDING by price (cheapest first)
+ * - SELL: consumes bids sorted DESCENDING by price (highest first)
  *
  * @param book - Pre-fetched order book
  * @param side - Trade side (BUY or SELL)
@@ -105,8 +124,11 @@ export function simulateBookFillsFromBook(
 ): SimulationResult {
     const log = logger.child({ assetId: book.asset_id, side, targetShares: targetShareMicros.toString() });
 
-    // Compute book metrics
-    const { bestBidMicros, bestAskMicros, midPriceMicros, spreadMicros } = computeBookMetrics(book);
+    // Normalize the book - this sorts levels and computes correct best bid/ask
+    const normalized = normalizeOrderBook(book, "REST");
+    const { bestBidMicros, bestAskMicros, midPriceMicros, spreadMicros } = normalized;
+
+    log.debug({ book: formatBookSummary(normalized) }, "Normalized book for simulation");
 
     // Initialize result
     const result: SimulationResult = {
@@ -125,16 +147,16 @@ export function simulateBookFillsFromBook(
     };
 
     // Check if book has liquidity
-    if (book.bids.length === 0 && book.asks.length === 0) {
+    if (normalized.bids.length === 0 && normalized.asks.length === 0) {
         result.error = "Empty order book";
         log.warn("Empty order book");
         return result;
     }
 
-    // Choose which side of the book to consume
-    // BUY: consume asks (ascending price)
-    // SELL: consume bids (descending price)
-    const levels = side === TradeSide.BUY ? book.asks : book.bids;
+    // Choose which side of the book to consume (already sorted by normalizeOrderBook)
+    // BUY: consume asks (sorted ascending by price - cheapest first)
+    // SELL: consume bids (sorted descending by price - highest first)
+    const levels: NormalizedLevel[] = side === TradeSide.BUY ? normalized.asks : normalized.bids;
 
     if (levels.length === 0) {
         result.error = `No ${side === TradeSide.BUY ? "asks" : "bids"} in book`;
@@ -142,40 +164,182 @@ export function simulateBookFillsFromBook(
         return result;
     }
 
-    // Simulate fills
+    // Simulate fills against sorted levels
     let remainingShares = targetShareMicros;
     let totalFilledShares = BigInt(0);
     let totalFilledNotional = BigInt(0);
 
     for (const level of levels) {
-        const levelPrice = priceToMicros(level.price);
-        const levelSize = sharesToMicros(level.size);
-
         // Check price bounds
         if (side === TradeSide.BUY && maxPriceMicros !== undefined) {
-            if (levelPrice > maxPriceMicros) {
-                // Price too high, stop consuming
+            if (level.priceMicros > maxPriceMicros) {
+                // Price too high, stop consuming (sorted ascending, no cheaper levels after)
                 break;
             }
         }
         if (side === TradeSide.SELL && minPriceMicros !== undefined) {
-            if (levelPrice < minPriceMicros) {
-                // Price too low, stop consuming
+            if (level.priceMicros < minPriceMicros) {
+                // Price too low, stop consuming (sorted descending, no higher levels after)
                 break;
             }
         }
 
         // Add to available notional (within bounds)
-        const levelNotional = (levelSize * BigInt(levelPrice)) / BigInt(1_000_000);
+        const levelNotional = (level.sizeMicros * BigInt(level.priceMicros)) / BigInt(1_000_000);
         result.availableNotionalMicros += levelNotional;
 
         // Fill from this level
         if (remainingShares > BigInt(0)) {
-            const fillShares = remainingShares < levelSize ? remainingShares : levelSize;
-            const fillNotional = (fillShares * BigInt(levelPrice)) / BigInt(1_000_000);
+            const fillShares = remainingShares < level.sizeMicros ? remainingShares : level.sizeMicros;
+            const fillNotional = (fillShares * BigInt(level.priceMicros)) / BigInt(1_000_000);
 
             result.fills.push({
-                priceMicros: levelPrice,
+                priceMicros: level.priceMicros,
+                shareMicros: fillShares,
+                notionalMicros: fillNotional,
+            });
+
+            totalFilledShares += fillShares;
+            totalFilledNotional += fillNotional;
+            remainingShares -= fillShares;
+        }
+    }
+
+    result.filledShareMicros = totalFilledShares;
+    result.filledNotionalMicros = totalFilledNotional;
+
+    // Compute VWAP
+    if (totalFilledShares > BigInt(0)) {
+        // VWAP = totalNotional / totalShares
+        // In micros: (totalNotional_micros * 1_000_000) / totalShares_micros
+        result.vwapPriceMicros = Number(
+            (totalFilledNotional * BigInt(1_000_000)) / totalFilledShares
+        );
+    }
+
+    // Compute fill ratio in basis points
+    if (targetShareMicros > BigInt(0)) {
+        result.filledRatioBps = Number(
+            (totalFilledShares * BigInt(10000)) / targetShareMicros
+        );
+        // Cap at 10000 (100%)
+        if (result.filledRatioBps > 10000) {
+            result.filledRatioBps = 10000;
+        }
+    }
+
+    result.success = true;
+
+    log.debug(
+        {
+            bestBid: result.bestBidMicros,
+            bestAsk: result.bestAskMicros,
+            spread: result.spreadMicros,
+            filled: totalFilledShares.toString(),
+            vwap: result.vwapPriceMicros,
+            fillRatio: result.filledRatioBps,
+        },
+        "Book simulation complete"
+    );
+
+    return result;
+}
+
+/**
+ * Simulate fills against a pre-normalized order book.
+ *
+ * This is the preferred method when you already have a NormalizedBook (e.g., from cache).
+ * Avoids double normalization.
+ *
+ * @param normalizedBook - Pre-normalized order book
+ * @param side - Trade side (BUY or SELL)
+ * @param targetShareMicros - Target shares to fill
+ * @param maxPriceMicros - Maximum acceptable price for BUY (optional)
+ * @param minPriceMicros - Minimum acceptable price for SELL (optional)
+ */
+export function simulateFromNormalizedBook(
+    normalizedBook: NormalizedBook,
+    side: TradeSide,
+    targetShareMicros: bigint,
+    maxPriceMicros?: number,
+    minPriceMicros?: number
+): SimulationResult {
+    const log = logger.child({
+        tokenId: normalizedBook.tokenId,
+        side,
+        targetShares: targetShareMicros.toString(),
+        source: normalizedBook.source,
+    });
+
+    const { bestBidMicros, bestAskMicros, midPriceMicros, spreadMicros } = normalizedBook;
+
+    log.debug({ book: formatBookSummary(normalizedBook) }, "Using pre-normalized book for simulation");
+
+    // Initialize result
+    const result: SimulationResult = {
+        success: false,
+        bestBidMicros,
+        bestAskMicros,
+        midPriceMicros,
+        spreadMicros,
+        availableNotionalMicros: BigInt(0),
+        targetShareMicros,
+        filledShareMicros: BigInt(0),
+        filledNotionalMicros: BigInt(0),
+        vwapPriceMicros: 0,
+        filledRatioBps: 0,
+        fills: [],
+    };
+
+    // Check if book has liquidity
+    if (normalizedBook.bids.length === 0 && normalizedBook.asks.length === 0) {
+        result.error = "Empty order book";
+        log.warn("Empty order book");
+        return result;
+    }
+
+    // Choose which side of the book to consume (already sorted in NormalizedBook)
+    // BUY: consume asks (sorted ascending by price - cheapest first)
+    // SELL: consume bids (sorted descending by price - highest first)
+    const levels: NormalizedLevel[] = side === TradeSide.BUY ? normalizedBook.asks : normalizedBook.bids;
+
+    if (levels.length === 0) {
+        result.error = `No ${side === TradeSide.BUY ? "asks" : "bids"} in book`;
+        log.warn(result.error);
+        return result;
+    }
+
+    // Simulate fills against sorted levels
+    let remainingShares = targetShareMicros;
+    let totalFilledShares = BigInt(0);
+    let totalFilledNotional = BigInt(0);
+
+    for (const level of levels) {
+        // Check price bounds
+        if (side === TradeSide.BUY && maxPriceMicros !== undefined) {
+            if (level.priceMicros > maxPriceMicros) {
+                // Price too high, stop consuming (sorted ascending, no cheaper levels after)
+                break;
+            }
+        }
+        if (side === TradeSide.SELL && minPriceMicros !== undefined) {
+            if (level.priceMicros < minPriceMicros) {
+                // Price too low, stop consuming (sorted descending, no higher levels after)
+                break;
+            }
+        }
+
+        // Add to available notional (within bounds)
+        const levelNotional = (level.sizeMicros * BigInt(level.priceMicros)) / BigInt(1_000_000);
+        result.availableNotionalMicros += levelNotional;
+
+        // Fill from this level
+        if (remainingShares > BigInt(0)) {
+            const fillShares = remainingShares < level.sizeMicros ? remainingShares : level.sizeMicros;
+            const fillNotional = (fillShares * BigInt(level.priceMicros)) / BigInt(1_000_000);
+
+            result.fills.push({
+                priceMicros: level.priceMicros,
                 shareMicros: fillShares,
                 notionalMicros: fillNotional,
             });

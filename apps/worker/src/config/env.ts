@@ -15,6 +15,10 @@ const envSchema = z.object({
         .string()
         .transform((v) => v.toLowerCase() !== "false" && v !== "0")
         .default("true"),
+    CLOB_BOOK_WS_ENABLED: z
+        .string()
+        .transform((v) => v.toLowerCase() !== "false" && v !== "0")
+        .default("true"),
     POLYMARKET_DATA_API_BASE_URL: z.string().url(),
     POLYMARKET_CLOB_BASE_URL: z.string().url(),
     GAMMA_API_BASE_URL: z.string().url().default("https://gamma-api.polymarket.com"),

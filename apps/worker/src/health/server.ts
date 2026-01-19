@@ -4,6 +4,7 @@ import { logger } from "../log/logger.js";
 import { getQueueDepths } from "../queue/queues.js";
 import { prisma } from "../db/prisma.js";
 import { getAggregateStats } from "../reconcile/index.js";
+import { getBookServiceStats } from "../simulate/bookService.js";
 
 interface LatencyMetrics {
     p50Ms: number;
@@ -20,20 +21,36 @@ interface ReconcileMetrics {
     latency: LatencyMetrics;
 }
 
+/**
+ * CLOB WebSocket book cache metrics.
+ */
+interface ClobBookMetrics {
+    enabled: boolean;
+    wsConnected: boolean;
+    cacheSize: number;
+    subscribedCount: number;
+    freshCount: number;
+}
+
 interface HealthStatus {
     status: "ok" | "degraded" | "unhealthy";
     timestamp: string;
     lastCanonicalEventTime: string | null;
-    wsConnected: boolean;
+    alchemyWsConnected: boolean;
+    clobBook: ClobBookMetrics;
     queueDepths: Record<string, number>;
     dbConnected: boolean;
     reconcile: ReconcileMetrics;
 }
 
-// Track WS connection state (set by alchemy module)
-let wsConnected = false;
+// Track Alchemy WS connection state (set by alchemy module)
+let alchemyWsConnected = false;
 export function setWsConnected(connected: boolean) {
-    wsConnected = connected;
+    alchemyWsConnected = connected;
+}
+// Alias for clarity
+export function setAlchemyWsConnected(connected: boolean) {
+    alchemyWsConnected = connected;
 }
 
 // Track last canonical event time
@@ -64,11 +81,21 @@ async function getHealthStatus(): Promise<HealthStatus> {
         },
     };
 
+    // Get CLOB book metrics
+    const bookStats = getBookServiceStats();
+    const clobBook: ClobBookMetrics = {
+        enabled: bookStats?.wsEnabled ?? false,
+        wsConnected: bookStats?.wsConnected ?? false,
+        cacheSize: bookStats?.cacheSize ?? 0,
+        subscribedCount: bookStats?.subscribedCount ?? 0,
+        freshCount: bookStats?.freshCount ?? 0,
+    };
+
     // Determine overall status
     let status: "ok" | "degraded" | "unhealthy" = "ok";
     if (!dbConnected) {
         status = "unhealthy";
-    } else if (!wsConnected) {
+    } else if (!alchemyWsConnected) {
         status = "degraded";
     }
 
@@ -76,7 +103,8 @@ async function getHealthStatus(): Promise<HealthStatus> {
         status,
         timestamp: new Date().toISOString(),
         lastCanonicalEventTime: lastCanonicalEventTime?.toISOString() ?? null,
-        wsConnected,
+        alchemyWsConnected,
+        clobBook,
         queueDepths,
         dbConnected,
         reconcile,

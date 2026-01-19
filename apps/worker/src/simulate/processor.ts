@@ -18,6 +18,7 @@ import {
     isActivityJobData,
 } from "./types.js";
 import type { ActivityPayload } from "../poly/types.js";
+import { ensureSubscribed } from "./bookService.js";
 
 const logger = createChildLogger({ module: "group-events-processor" });
 
@@ -76,6 +77,10 @@ async function processTradeForAggregation(
         log.warn("Trade has no token ID (neither rawTokenId nor assetId), skipping aggregation");
         return;
     }
+
+    // Pre-subscribe to WS book updates for this token
+    // This warms the cache so it's ready when the group flushes to executor
+    ensureSubscribed(effectiveTokenId);
 
     // Create pending event for aggregator
     const pendingEvent: PendingTradeEvent = {

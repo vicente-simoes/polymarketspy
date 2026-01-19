@@ -10,6 +10,7 @@ import { startSnapshotLoops, stopSnapshotLoops } from "./snapshot/index.js";
 import { startReconcileWorker, stopReconcileWorker, flushPendingReconciles } from "./reconcile/index.js";
 import { startEnrichmentProcessor, stopEnrichmentProcessor } from "./enrichment/index.js";
 import { loadResolvedTokensFromRedis, setRedisClient } from "./poly/index.js";
+import { stopBookService } from "./simulate/bookService.js";
 import { env } from "./config/env.js";
 
 async function main() {
@@ -63,6 +64,13 @@ async function main() {
         logger.info("Alchemy WebSocket disabled (ALCHEMY_WS_ENABLED=false)");
     }
 
+    // Log CLOB Book WS status (lazily initialized on first book request)
+    if (env.CLOB_BOOK_WS_ENABLED) {
+        logger.info("CLOB Book WebSocket enabled (will connect on first book request)");
+    } else {
+        logger.info("CLOB Book WebSocket disabled (CLOB_BOOK_WS_ENABLED=false), using REST only");
+    }
+
     // Start reconcile worker (processes Alchemy-triggered fast fetches)
     startReconcileWorker();
 
@@ -86,6 +94,8 @@ async function main() {
         if (env.ALCHEMY_WS_ENABLED) {
             await stopAlchemySubscription();
         }
+        // Stop CLOB book WebSocket and cache
+        await stopBookService();
         await prisma.$disconnect();
         await redisConnection.quit();
         process.exit(0);

@@ -13,6 +13,7 @@ import {
     type MarketInfo,
     MarketInfoSchema,
 } from "./types.js";
+import { computeBestBid, computeBestAsk } from "../simulate/bookUtils.js";
 
 const logger = createChildLogger({ module: "polymarket-api" });
 
@@ -315,11 +316,13 @@ export async function fetchPrices(
                 continue;
             }
 
-            // Calculate midpoint price
-            const bestBid =
-                book.bids.length > 0 ? parseFloat(book.bids[0]!.price) : 0;
-            const bestAsk =
-                book.asks.length > 0 ? parseFloat(book.asks[0]!.price) : 1;
+            // Calculate midpoint price using proper max/min (NOT [0] index)
+            const bestBidMicros = computeBestBid(book.bids);
+            const bestAskMicros = computeBestAsk(book.asks);
+
+            // Convert back to decimal 0-1 for this API
+            const bestBid = bestBidMicros / 1_000_000;
+            const bestAsk = bestAskMicros / 1_000_000;
 
             if (bestBid > 0 && bestAsk < 1) {
                 prices.set(tokenId, (bestBid + bestAsk) / 2);

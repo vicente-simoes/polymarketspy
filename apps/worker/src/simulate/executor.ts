@@ -18,12 +18,11 @@ import { getSystemConfig } from "../config/system.js";
 import { getGlobalConfig, getUserConfig } from "./config.js";
 import { computeTargetNotional, computeTargetShares } from "./sizing.js";
 import {
-    simulateBookFillsFromBook,
-    computeBookMetrics,
-    fetchOrderBook,
+    simulateFromNormalizedBook,
     type SimulationResult,
-    type OrderBook,
 } from "./book.js";
+import { getBook } from "./bookService.js";
+import type { NormalizedBook } from "./bookUtils.js";
 import {
     checkSpreadFilter,
     checkDepthRequirement,
@@ -236,24 +235,14 @@ export async function executeTradeGroup(
     }
 
     // 5. Fetch order book FIRST (before computing price bounds)
-    log.debug("Fetching order book");
-    let book: OrderBook | null;
-    try {
-        book = await fetchOrderBook(effectiveTokenId);
-    } catch (err) {
-        log.error({ err }, "Failed to fetch order book");
-        return {
-            decision: CopyDecision.SKIP,
-            reasonCodes: [ReasonCodes.NO_LIQUIDITY_WITHIN_BOUNDS],
-            targetNotionalMicros: targetResult.targetNotionalMicros,
-            filledNotionalMicros: BigInt(0),
-            filledShareMicros: BigInt(0),
-            vwapPriceMicros: 0,
-            filledRatioBps: 0,
-        };
-    }
+    // Uses cache-first approach: WS cache if available, REST fallback
+    log.debug("Fetching order book (cache-first)");
+    const bookResult = await getBook(effectiveTokenId, {
+        waitMs: 500,
+        freshnessMs: 2000,
+    });
 
-    if (!book) {
+    if (!bookResult.book) {
         log.warn("Order book not available (market may be resolved)");
         return {
             decision: CopyDecision.SKIP,
@@ -266,9 +255,10 @@ export async function executeTradeGroup(
         };
     }
 
-    // 6. Compute mid price from the REAL book
-    const bookMetrics = computeBookMetrics(book);
-    const { midPriceMicros, bestBidMicros, bestAskMicros, spreadMicros } = bookMetrics;
+    const book: NormalizedBook = bookResult.book;
+
+    // 6. Extract metrics from the normalized book
+    const { midPriceMicros, bestBidMicros, bestAskMicros, spreadMicros } = book;
 
     // 7. Now compute price bounds using the REAL mid price
     const priceBounds = computePriceBounds(
@@ -278,9 +268,9 @@ export async function executeTradeGroup(
         guardrails
     );
 
-    // 8. Simulate fills against the pre-fetched book
+    // 8. Simulate fills against the normalized book
     const targetShareMicros = computeTargetShares(targetResult.targetNotionalMicros, group.vwapPriceMicros);
-    const simulation = simulateBookFillsFromBook(
+    const simulation = simulateFromNormalizedBook(
         book,
         group.side,
         targetShareMicros,
@@ -306,6 +296,8 @@ export async function executeTradeGroup(
             filledShareMicros: simulation.filledShareMicros.toString(),
             filledRatioBps: simulation.filledRatioBps,
             simulationSuccess: simulation.success,
+            bookSource: bookResult.source,
+            bookStale: bookResult.stale,
         },
         "Copy attempt decision inputs"
     );

@@ -191,158 +191,14 @@ export default function PortfolioPage() {
                                             riskStatus === "good"
                                                 ? "text-[#86efac]"
                                                 : riskStatus === "warn"
-                                                  ? "text-amber-400"
-                                                  : "text-red-400"
+                                                    ? "text-amber-400"
+                                                    : "text-red-400"
                                         }
                                         hint={`Cap ${metrics.maxTotalExposurePct.toFixed(0)}%`}
                                     />
                                 </div>
 
-                                <div className="grid grid-cols-1 xl:grid-cols-[1.6fr_1fr] gap-6">
-                                    <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
-                                        <div className="text-sm text-[#6f6f6f]">Open Positions</div>
-                                        <div className="mt-4 overflow-x-auto">
-                                            <table className="w-full text-sm">
-                                                <thead>
-                                                    <tr className="text-[#6f6f6f] border-b border-[#27272A]">
-                                                        <th className="pb-3 text-left">Market</th>
-                                                        <th className="pb-3 text-right">Shares</th>
-                                                        <th className="pb-3 text-right">Mark</th>
-                                                        <th className="pb-3 text-right">Value</th>
-                                                        <th className="pb-3 text-right">Invested</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    {data.positions.length > 0 ? (
-                                                        data.positions.map((position) => {
-                                                            const marketValue =
-                                                                position.marketValue ?? position.invested
-                                                            return (
-                                                                <tr
-                                                                    key={`${position.assetId ?? "unknown"}-${position.marketId ?? "market"}`}
-                                                                    className="border-b border-[#1A1A1A] last:border-0"
-                                                                >
-                                                                    <td className="py-3 text-white">
-                                                                        <div className="font-medium">
-                                                                            {position.marketTitle}
-                                                                        </div>
-                                                                        <div className="text-xs text-[#6f6f6f]">
-                                                                            {position.outcome}
-                                                                        </div>
-                                                                    </td>
-                                                                    <td className="py-3 text-right text-white">
-                                                                        {position.shares.toFixed(2)}
-                                                                    </td>
-                                                                    <td className="py-3 text-right text-white">
-                                                                        {position.markPrice !== null
-                                                                            ? position.markPrice.toFixed(3)
-                                                                            : "--"}
-                                                                    </td>
-                                                                    <td className="py-3 text-right text-white">
-                                                                        {formatCurrency(marketValue)}
-                                                                    </td>
-                                                                    <td className="py-3 text-right text-white">
-                                                                        {formatCurrency(position.invested)}
-                                                                    </td>
-                                                                </tr>
-                                                            )
-                                                        })
-                                                    ) : (
-                                                        <tr>
-                                                            <td
-                                                                colSpan={5}
-                                                                className="py-6 text-center text-[#6f6f6f]"
-                                                            >
-                                                                No open positions
-                                                            </td>
-                                                        </tr>
-                                                    )}
-                                                </tbody>
-                                            </table>
-                                        </div>
-                                    </div>
-
-                                    <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
-                                        <div className="flex items-center gap-2 text-sm text-[#6f6f6f]">
-                                            <Shield className="h-4 w-4 text-[#86efac]" />
-                                            Risk Utilization
-                                        </div>
-                                        <div className="mt-4 flex flex-col gap-4">
-                                            <ProgressStat
-                                                label="Exposure vs Cap"
-                                                value={riskUtilization}
-                                                status={riskStatus}
-                                                hint={`Limit ${metrics.maxTotalExposurePct.toFixed(0)}%`}
-                                            />
-                                            <ProgressStat
-                                                label="Drawdown vs Limit"
-                                                value={drawdownUtilization}
-                                                status={drawdownStatus}
-                                                hint={`Limit ${metrics.maxDrawdownLimitPct.toFixed(1)}%`}
-                                            />
-                                        </div>
-                                        <div className="mt-6 flex items-center gap-3 text-sm text-[#6f6f6f]">
-                                            <TrendingUp className="h-4 w-4 text-[#86efac]" />
-                                            Exposure {formatPercent(metrics.exposurePct)} of equity
-                                        </div>
-                                        <div className="mt-2 flex items-center gap-3 text-sm text-[#6f6f6f]">
-                                            <TrendingDown className="h-4 w-4 text-red-400" />
-                                            Current drawdown {metrics.currentDrawdownPct.toFixed(2)}%
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-                                    <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
-                                        <div className="text-sm text-[#6f6f6f]">Exposure by Market</div>
-                                        <div className="mt-4 h-[260px]">
-                                            {data.exposureByMarket.length > 0 ? (
-                                                <ResponsiveContainer width="100%" height="100%">
-                                                    <BarChart data={data.exposureByMarket}>
-                                                        <CartesianGrid strokeDasharray="3 3" stroke="#1F1F1F" />
-                                                        <XAxis
-                                                            dataKey="marketTitle"
-                                                            tick={{ fill: "#6f6f6f", fontSize: 10 }}
-                                                            axisLine={false}
-                                                            tickLine={false}
-                                                            tickFormatter={(value) =>
-                                                                trimLabel(String(value), 12)
-                                                            }
-                                                        />
-                                                        <YAxis
-                                                            tick={{ fill: "#6f6f6f" }}
-                                                            axisLine={false}
-                                                            tickLine={false}
-                                                            tickFormatter={(value) => `$${value}`}
-                                                        />
-                                                        <Tooltip
-                                                            content={({ active, payload }) => {
-                                                                if (active && payload && payload.length) {
-                                                                    return (
-                                                                        <div className="rounded-lg border border-[#27272A] bg-[#0D0D0D] p-3 text-sm text-white shadow-xl">
-                                                                            <div className="text-[#6f6f6f]">
-                                                                                {payload[0].payload.marketTitle}
-                                                                            </div>
-                                                                            <div className="mt-1 text-[#86efac]">
-                                                                                {formatCurrency(payload[0].value as number)}
-                                                                            </div>
-                                                                        </div>
-                                                                    )
-                                                                }
-                                                                return null
-                                                            }}
-                                                        />
-                                                        <Bar dataKey="exposure" fill="#86efac" radius={[6, 6, 0, 0]} />
-                                                    </BarChart>
-                                                </ResponsiveContainer>
-                                            ) : (
-                                                <div className="h-full flex items-center justify-center text-[#6f6f6f]">
-                                                    No exposure yet
-                                                </div>
-                                            )}
-                                        </div>
-                                    </div>
-
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                     <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
                                         <div className="text-sm text-[#6f6f6f]">Exposure by User</div>
                                         <div className="mt-4 h-[260px]">
@@ -391,6 +247,148 @@ export default function PortfolioPage() {
                                                 </div>
                                             )}
                                         </div>
+                                    </div>
+
+                                    <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
+                                        <div className="flex items-center gap-2 text-sm text-[#6f6f6f]">
+                                            <Shield className="h-4 w-4 text-[#86efac]" />
+                                            Risk Utilization
+                                        </div>
+                                        <div className="mt-4 flex flex-col gap-4">
+                                            <ProgressStat
+                                                label="Exposure vs Cap"
+                                                value={riskUtilization}
+                                                status={riskStatus}
+                                                hint={`Limit ${metrics.maxTotalExposurePct.toFixed(0)}%`}
+                                            />
+                                            <ProgressStat
+                                                label="Drawdown vs Limit"
+                                                value={drawdownUtilization}
+                                                status={drawdownStatus}
+                                                hint={`Limit ${metrics.maxDrawdownLimitPct.toFixed(1)}%`}
+                                            />
+                                        </div>
+                                        <div className="mt-6 flex items-center gap-3 text-sm text-[#6f6f6f]">
+                                            <TrendingUp className="h-4 w-4 text-[#86efac]" />
+                                            Exposure {formatPercent(metrics.exposurePct)} of equity
+                                        </div>
+                                        <div className="mt-2 flex items-center gap-3 text-sm text-[#6f6f6f]">
+                                            <TrendingDown className="h-4 w-4 text-red-400" />
+                                            Current drawdown {metrics.currentDrawdownPct.toFixed(2)}%
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
+                                    <div className="text-sm text-[#6f6f6f]">Exposure by Market</div>
+                                    <div className="mt-4 h-[260px]">
+                                        {data.exposureByMarket.length > 0 ? (
+                                            <ResponsiveContainer width="100%" height="100%">
+                                                <BarChart data={data.exposureByMarket}>
+                                                    <CartesianGrid strokeDasharray="3 3" stroke="#1F1F1F" />
+                                                    <XAxis
+                                                        dataKey="marketTitle"
+                                                        tick={{ fill: "#6f6f6f", fontSize: 10 }}
+                                                        axisLine={false}
+                                                        tickLine={false}
+                                                        tickFormatter={(value) =>
+                                                            trimLabel(String(value), 12)
+                                                        }
+                                                    />
+                                                    <YAxis
+                                                        tick={{ fill: "#6f6f6f" }}
+                                                        axisLine={false}
+                                                        tickLine={false}
+                                                        tickFormatter={(value) => `$${value}`}
+                                                    />
+                                                    <Tooltip
+                                                        content={({ active, payload }) => {
+                                                            if (active && payload && payload.length) {
+                                                                return (
+                                                                    <div className="rounded-lg border border-[#27272A] bg-[#0D0D0D] p-3 text-sm text-white shadow-xl">
+                                                                        <div className="text-[#6f6f6f]">
+                                                                            {payload[0].payload.marketTitle}
+                                                                        </div>
+                                                                        <div className="mt-1 text-[#86efac]">
+                                                                            {formatCurrency(payload[0].value as number)}
+                                                                        </div>
+                                                                    </div>
+                                                                )
+                                                            }
+                                                            return null
+                                                        }}
+                                                    />
+                                                    <Bar dataKey="exposure" fill="#86efac" radius={[6, 6, 0, 0]} />
+                                                </BarChart>
+                                            </ResponsiveContainer>
+                                        ) : (
+                                            <div className="h-full flex items-center justify-center text-[#6f6f6f]">
+                                                No exposure yet
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+
+                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
+                                    <div className="text-sm text-[#6f6f6f]">Open Positions</div>
+                                    <div className="mt-4 overflow-x-auto">
+                                        <table className="w-full text-sm">
+                                            <thead>
+                                                <tr className="text-[#6f6f6f] border-b border-[#27272A]">
+                                                    <th className="pb-3 text-left">Market</th>
+                                                    <th className="pb-3 text-right">Shares</th>
+                                                    <th className="pb-3 text-right">Mark</th>
+                                                    <th className="pb-3 text-right">Value</th>
+                                                    <th className="pb-3 text-right">Invested</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {data.positions.length > 0 ? (
+                                                    data.positions.map((position) => {
+                                                        const marketValue =
+                                                            position.marketValue ?? position.invested
+                                                        return (
+                                                            <tr
+                                                                key={`${position.assetId ?? "unknown"}-${position.marketId ?? "market"}`}
+                                                                className="border-b border-[#1A1A1A] last:border-0"
+                                                            >
+                                                                <td className="py-3 text-white">
+                                                                    <div className="font-medium">
+                                                                        {position.marketTitle}
+                                                                    </div>
+                                                                    <div className="text-xs text-[#6f6f6f]">
+                                                                        {position.outcome}
+                                                                    </div>
+                                                                </td>
+                                                                <td className="py-3 text-right text-white">
+                                                                    {position.shares.toFixed(2)}
+                                                                </td>
+                                                                <td className="py-3 text-right text-white">
+                                                                    {position.markPrice !== null
+                                                                        ? position.markPrice.toFixed(3)
+                                                                        : "--"}
+                                                                </td>
+                                                                <td className="py-3 text-right text-white">
+                                                                    {formatCurrency(marketValue)}
+                                                                </td>
+                                                                <td className="py-3 text-right text-white">
+                                                                    {formatCurrency(position.invested)}
+                                                                </td>
+                                                            </tr>
+                                                        )
+                                                    })
+                                                ) : (
+                                                    <tr>
+                                                        <td
+                                                            colSpan={5}
+                                                            className="py-6 text-center text-[#6f6f6f]"
+                                                        >
+                                                            No open positions
+                                                        </td>
+                                                    </tr>
+                                                )}
+                                            </tbody>
+                                        </table>
                                     </div>
                                 </div>
                             </div>
