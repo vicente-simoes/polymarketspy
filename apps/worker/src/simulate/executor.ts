@@ -17,7 +17,13 @@ import { createChildLogger } from "../log/logger.js";
 import { getSystemConfig } from "../config/system.js";
 import { getGlobalConfig, getUserConfig } from "./config.js";
 import { computeTargetNotional, computeTargetShares } from "./sizing.js";
-import { simulateBookFills, type SimulationResult } from "./book.js";
+import {
+    simulateBookFillsFromBook,
+    computeBookMetrics,
+    fetchOrderBook,
+    type SimulationResult,
+    type OrderBook,
+} from "./book.js";
 import {
     checkSpreadFilter,
     checkDepthRequirement,
@@ -215,15 +221,7 @@ export async function executeTradeGroup(
         sizing
     );
 
-    // 4. Compute price bounds
-    const priceBounds = computePriceBounds(
-        group.side,
-        group.vwapPriceMicros,
-        0, // Will be updated after book fetch
-        guardrails
-    );
-
-    // 5. Fetch order book and simulate fills
+    // 4. Check if we have a token ID
     if (!effectiveTokenId) {
         log.error("No token ID available for book simulation");
         return {
@@ -237,13 +235,79 @@ export async function executeTradeGroup(
         };
     }
 
+    // 5. Fetch order book FIRST (before computing price bounds)
     log.debug("Fetching order book");
-    const simulation = await simulateBookFills(
-        effectiveTokenId,
+    let book: OrderBook | null;
+    try {
+        book = await fetchOrderBook(effectiveTokenId);
+    } catch (err) {
+        log.error({ err }, "Failed to fetch order book");
+        return {
+            decision: CopyDecision.SKIP,
+            reasonCodes: [ReasonCodes.NO_LIQUIDITY_WITHIN_BOUNDS],
+            targetNotionalMicros: targetResult.targetNotionalMicros,
+            filledNotionalMicros: BigInt(0),
+            filledShareMicros: BigInt(0),
+            vwapPriceMicros: 0,
+            filledRatioBps: 0,
+        };
+    }
+
+    if (!book) {
+        log.warn("Order book not available (market may be resolved)");
+        return {
+            decision: CopyDecision.SKIP,
+            reasonCodes: [ReasonCodes.NO_LIQUIDITY_WITHIN_BOUNDS],
+            targetNotionalMicros: targetResult.targetNotionalMicros,
+            filledNotionalMicros: BigInt(0),
+            filledShareMicros: BigInt(0),
+            vwapPriceMicros: 0,
+            filledRatioBps: 0,
+        };
+    }
+
+    // 6. Compute mid price from the REAL book
+    const bookMetrics = computeBookMetrics(book);
+    const { midPriceMicros, bestBidMicros, bestAskMicros, spreadMicros } = bookMetrics;
+
+    // 7. Now compute price bounds using the REAL mid price
+    const priceBounds = computePriceBounds(
         group.side,
-        computeTargetShares(targetResult.targetNotionalMicros, group.vwapPriceMicros),
+        group.vwapPriceMicros,
+        midPriceMicros, // Use real mid from book
+        guardrails
+    );
+
+    // 8. Simulate fills against the pre-fetched book
+    const targetShareMicros = computeTargetShares(targetResult.targetNotionalMicros, group.vwapPriceMicros);
+    const simulation = simulateBookFillsFromBook(
+        book,
+        group.side,
+        targetShareMicros,
         priceBounds.maxPriceMicros,
         priceBounds.minPriceMicros
+    );
+
+    // Log decision inputs for observability (helps debug "always skip" issues)
+    log.info(
+        {
+            side: group.side,
+            theirRefPriceMicros: group.vwapPriceMicros,
+            bestBidMicros,
+            bestAskMicros,
+            midPriceMicros,
+            spreadMicros,
+            maxPriceMicros: priceBounds.maxPriceMicros,
+            minPriceMicros: priceBounds.minPriceMicros,
+            targetNotionalMicros: targetResult.targetNotionalMicros.toString(),
+            targetShareMicros: targetShareMicros.toString(),
+            availableNotionalMicros: simulation.availableNotionalMicros.toString(),
+            filledNotionalMicros: simulation.filledNotionalMicros.toString(),
+            filledShareMicros: simulation.filledShareMicros.toString(),
+            filledRatioBps: simulation.filledRatioBps,
+            simulationSuccess: simulation.success,
+        },
+        "Copy attempt decision inputs"
     );
 
     if (!simulation.success) {
@@ -251,7 +315,7 @@ export async function executeTradeGroup(
         reasonCodes.push(ReasonCodes.NO_LIQUIDITY_WITHIN_BOUNDS);
     }
 
-    // 6. Run guardrail checks
+    // 9. Run guardrail checks
     if (simulation.success) {
         // Spread filter
         const spreadCheck = checkSpreadFilter(simulation.spreadMicros, guardrails);
@@ -320,7 +384,7 @@ export async function executeTradeGroup(
         reasonCodes.push(ReasonCodes.NO_LIQUIDITY_WITHIN_BOUNDS);
     }
 
-    // 7. Determine decision
+    // 10. Determine decision
     const uniqueReasons = [...new Set(reasonCodes)];
     const decision = uniqueReasons.length === 0 ? CopyDecision.EXECUTE : CopyDecision.SKIP;
 
@@ -335,7 +399,7 @@ export async function executeTradeGroup(
         "Copy attempt decision"
     );
 
-    // 8. Write CopyAttempt to database
+    // 11. Write CopyAttempt to database
     // Handle the upsert differently based on whether followedUserId is null
     // Prisma compound unique with nullable field requires special handling
     const copyAttemptData = {
@@ -400,7 +464,7 @@ export async function executeTradeGroup(
         }
     }
 
-    // 9. Write ExecutableFill rows and ledger entries if EXECUTE
+    // 12. Write ExecutableFill rows and ledger entries if EXECUTE
     if (decision === CopyDecision.EXECUTE && simulation.fills.length > 0) {
         // Write fill rows
         for (const fill of simulation.fills) {
