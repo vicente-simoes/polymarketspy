@@ -64,3 +64,8 @@ ssh polybot@165.22.205.182
 pass:polymarket-bot
 
 pass (inside): jocavice
+
+docker exec -it polymarket-db psql -U copybot -d copybot -c \
+"INSERT INTO \"AllowedAdminEmail\" (\"id\",\"email\")
+ VALUES (gen_random_uuid(), 'vicente.pt.simoes@gmail.com')
+ ON CONFLICT (\"email\") DO NOTHING;"
