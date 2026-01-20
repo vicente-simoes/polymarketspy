@@ -157,7 +157,7 @@ export async function GET() {
                 prisma.activityEvent.findFirst({ orderBy: { eventTime: "desc" } }),
                 prisma.portfolioSnapshot.findFirst({ orderBy: { bucketTime: "desc" } }),
                 prisma.portfolioSnapshot.findFirst({
-                    where: { portfolioScope: "EXEC_GLOBAL" },
+                    where: { portfolioScope: "EXEC_GLOBAL", followedUserId: null },
                     orderBy: { bucketTime: "desc" }
                 }),
                 prisma.systemCheckpoint.findMany({

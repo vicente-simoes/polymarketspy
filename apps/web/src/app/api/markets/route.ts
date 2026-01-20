@@ -15,7 +15,8 @@ export async function GET(request: Request) {
 
     try {
         const guardrails = await prisma.guardrailConfig.findFirst({
-            where: { scope: "GLOBAL" }
+            where: { scope: "GLOBAL", followedUserId: null },
+            orderBy: { updatedAt: "desc" }
         })
         const guardrailsConfig = (guardrails?.configJson || {}) as Record<string, any>
         const blacklist = Array.isArray(guardrailsConfig.marketBlacklist)
@@ -229,7 +230,8 @@ export async function POST(request: Request) {
         }
 
         const existing = await prisma.guardrailConfig.findFirst({
-            where: { scope: "GLOBAL" }
+            where: { scope: "GLOBAL", followedUserId: null },
+            orderBy: { updatedAt: "desc" }
         })
 
         const configJson = (existing?.configJson || {}) as Record<string, any>
@@ -249,15 +251,16 @@ export async function POST(request: Request) {
             marketBlacklist: Array.from(blacklistSet)
         }
 
-        if (existing) {
-            await prisma.guardrailConfig.update({
-                where: { id: existing.id },
-                data: { configJson: updatedConfig }
-            })
-        } else {
+        const result = await prisma.guardrailConfig.updateMany({
+            where: { scope: "GLOBAL", followedUserId: null },
+            data: { configJson: updatedConfig }
+        })
+
+        if (result.count === 0) {
             await prisma.guardrailConfig.create({
                 data: {
                     scope: "GLOBAL",
+                    followedUserId: null,
                     configJson: updatedConfig
                 }
             })

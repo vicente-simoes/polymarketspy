@@ -25,16 +25,14 @@ export async function POST(
 
         // Update User Guardrails
         if (guardrails) {
-            const existing = await prisma.guardrailConfig.findFirst({
-                where: { scope: "USER", followedUserId: userId }
+            // NOTE: We may have multiple rows due to missing DB uniqueness constraints.
+            // Always update ALL matching rows to keep reads consistent.
+            const result = await prisma.guardrailConfig.updateMany({
+                where: { scope: "USER", followedUserId: userId },
+                data: { configJson: guardrails }
             })
 
-            if (existing) {
-                await prisma.guardrailConfig.update({
-                    where: { id: existing.id },
-                    data: { configJson: guardrails }
-                })
-            } else {
+            if (result.count === 0) {
                 await prisma.guardrailConfig.create({
                     data: {
                         scope: "USER",
@@ -47,16 +45,12 @@ export async function POST(
 
         // Update User Sizing
         if (sizing) {
-            const existing = await prisma.copySizingConfig.findFirst({
-                where: { scope: "USER", followedUserId: userId }
+            const result = await prisma.copySizingConfig.updateMany({
+                where: { scope: "USER", followedUserId: userId },
+                data: { configJson: sizing }
             })
 
-            if (existing) {
-                await prisma.copySizingConfig.update({
-                    where: { id: existing.id },
-                    data: { configJson: sizing }
-                })
-            } else {
+            if (result.count === 0) {
                 await prisma.copySizingConfig.create({
                     data: {
                         scope: "USER",
@@ -85,11 +79,14 @@ export async function GET(
 
     try {
         const { id: userId } = await params
+        // Use deterministic ordering in case duplicates exist.
         const guardrails = await prisma.guardrailConfig.findFirst({
-            where: { scope: "USER", followedUserId: userId }
+            where: { scope: "USER", followedUserId: userId },
+            orderBy: { updatedAt: "desc" }
         })
         const sizing = await prisma.copySizingConfig.findFirst({
-            where: { scope: "USER", followedUserId: userId }
+            where: { scope: "USER", followedUserId: userId },
+            orderBy: { updatedAt: "desc" }
         })
 
         return NextResponse.json({

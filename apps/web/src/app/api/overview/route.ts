@@ -16,7 +16,7 @@ export async function GET(request: NextRequest) {
         // Basic overview query
         // 1. Get latest global portfolio snapshot
         const latestSnapshot = await prisma.portfolioSnapshot.findFirst({
-            where: { portfolioScope: "EXEC_GLOBAL" },
+            where: { portfolioScope: "EXEC_GLOBAL", followedUserId: null },
             orderBy: { bucketTime: 'desc' }
         })
 
@@ -55,6 +55,7 @@ export async function GET(request: NextRequest) {
         const equityCurveSnapshots = await prisma.portfolioSnapshot.findMany({
             where: {
                 portfolioScope: "EXEC_GLOBAL",
+                followedUserId: null,
                 bucketTime: { gte: startTime }
             },
             orderBy: { bucketTime: 'asc' }

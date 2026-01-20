@@ -87,7 +87,8 @@ function isCacheValid(loadedAt: Date): boolean {
 async function loadGlobalConfig(): Promise<{ guardrails: Guardrails; sizing: Sizing }> {
     // Load guardrails
     const guardrailRow = await prisma.guardrailConfig.findFirst({
-        where: { scope: ConfigScope.GLOBAL },
+        where: { scope: ConfigScope.GLOBAL, followedUserId: null },
+        orderBy: { updatedAt: "desc" },
     });
 
     let guardrails = DEFAULT_GUARDRAILS;
@@ -102,7 +103,8 @@ async function loadGlobalConfig(): Promise<{ guardrails: Guardrails; sizing: Siz
 
     // Load sizing
     const sizingRow = await prisma.copySizingConfig.findFirst({
-        where: { scope: ConfigScope.GLOBAL },
+        where: { scope: ConfigScope.GLOBAL, followedUserId: null },
+        orderBy: { updatedAt: "desc" },
     });
 
     let sizing = DEFAULT_SIZING;
@@ -132,6 +134,7 @@ async function loadUserConfig(
             scope: ConfigScope.USER,
             followedUserId,
         },
+        orderBy: { updatedAt: "desc" },
     });
 
     let guardrails = globalGuardrails;
@@ -150,6 +153,7 @@ async function loadUserConfig(
             scope: ConfigScope.USER,
             followedUserId,
         },
+        orderBy: { updatedAt: "desc" },
     });
 
     let sizing = globalSizing;

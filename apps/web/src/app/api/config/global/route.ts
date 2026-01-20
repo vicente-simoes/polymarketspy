@@ -18,20 +18,18 @@ export async function POST(request: Request) {
 
         // Update Global Guardrails
         if (guardrails) {
-            // Find existing global config or create
-            const existing = await prisma.guardrailConfig.findFirst({
-                where: { scope: "GLOBAL" }
+            // NOTE: We may have multiple rows due to missing DB uniqueness constraints.
+            // Always update ALL matching rows to keep reads consistent.
+            const result = await prisma.guardrailConfig.updateMany({
+                where: { scope: "GLOBAL", followedUserId: null },
+                data: { configJson: guardrails }
             })
 
-            if (existing) {
-                await prisma.guardrailConfig.update({
-                    where: { id: existing.id },
-                    data: { configJson: guardrails }
-                })
-            } else {
+            if (result.count === 0) {
                 await prisma.guardrailConfig.create({
                     data: {
                         scope: "GLOBAL",
+                        followedUserId: null,
                         configJson: guardrails
                     }
                 })
@@ -40,19 +38,16 @@ export async function POST(request: Request) {
 
         // Update Global Sizing
         if (sizing) {
-            const existing = await prisma.copySizingConfig.findFirst({
-                where: { scope: "GLOBAL" }
+            const result = await prisma.copySizingConfig.updateMany({
+                where: { scope: "GLOBAL", followedUserId: null },
+                data: { configJson: sizing }
             })
 
-            if (existing) {
-                await prisma.copySizingConfig.update({
-                    where: { id: existing.id },
-                    data: { configJson: sizing }
-                })
-            } else {
+            if (result.count === 0) {
                 await prisma.copySizingConfig.create({
                     data: {
                         scope: "GLOBAL",
+                        followedUserId: null,
                         configJson: sizing
                     }
                 })
@@ -105,11 +100,14 @@ export async function GET() {
     }
 
     try {
+        // Use deterministic ordering in case duplicates exist.
         const guardrails = await prisma.guardrailConfig.findFirst({
-            where: { scope: "GLOBAL" }
+            where: { scope: "GLOBAL", followedUserId: null },
+            orderBy: { updatedAt: "desc" }
         })
         const sizing = await prisma.copySizingConfig.findFirst({
-            where: { scope: "GLOBAL" }
+            where: { scope: "GLOBAL", followedUserId: null },
+            orderBy: { updatedAt: "desc" }
         })
 
         const systemRow = await prisma.systemCheckpoint.findUnique({

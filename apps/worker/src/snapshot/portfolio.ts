@@ -226,27 +226,23 @@ async function computePortfolioSnapshot(
                 },
             });
         } else {
-            // For global scope (null followedUserId), use findFirst + create/update
-            const existing = await prisma.portfolioSnapshot.findFirst({
+            // Postgres UNIQUE constraints allow multiple NULLs; keep writes stable if duplicates exist.
+            const result = await prisma.portfolioSnapshot.updateMany({
                 where: {
                     portfolioScope: scope,
                     followedUserId: null,
                     bucketTime,
                 },
+                data: {
+                    equityMicros,
+                    cashMicros,
+                    exposureMicros: totalExposureMicros,
+                    unrealizedPnlMicros: totalUnrealizedPnlMicros,
+                    realizedPnlMicros,
+                },
             });
 
-            if (existing) {
-                await prisma.portfolioSnapshot.update({
-                    where: { id: existing.id },
-                    data: {
-                        equityMicros,
-                        cashMicros,
-                        exposureMicros: totalExposureMicros,
-                        unrealizedPnlMicros: totalUnrealizedPnlMicros,
-                        realizedPnlMicros,
-                    },
-                });
-            } else {
+            if (result.count === 0) {
                 await prisma.portfolioSnapshot.create({
                     data: snapshotData,
                 });

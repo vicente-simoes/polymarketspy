@@ -11,7 +11,8 @@ export async function GET() {
 
     try {
         const guardrails = await prisma.guardrailConfig.findFirst({
-            where: { scope: "GLOBAL" }
+            where: { scope: "GLOBAL", followedUserId: null },
+            orderBy: { updatedAt: "desc" }
         })
         const guardrailsConfig = (guardrails?.configJson || {}) as Record<string, any>
         const maxTotalExposureBps =
