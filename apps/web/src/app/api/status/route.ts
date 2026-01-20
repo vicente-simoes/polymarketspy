@@ -9,7 +9,7 @@ type WorkerHealth = {
     status: "ok" | "degraded" | "unhealthy"
     timestamp: string
     lastCanonicalEventTime: string | null
-    wsConnected: boolean
+    alchemyWsConnected: boolean
     queueDepths: Record<string, number>
     dbConnected: boolean
 }
@@ -230,14 +230,14 @@ export async function GET() {
                 database: dbConnected ? "ok" : "down",
                 redis: redisStatus,
                 websocket: workerHealth
-                    ? workerHealth.wsConnected
+                    ? workerHealth.alchemyWsConnected
                         ? "ok"
                         : "degraded"
                     : "down"
             },
             worker: {
                 lastCanonicalEventTime: workerHealth?.lastCanonicalEventTime ?? null,
-                wsConnected: workerHealth?.wsConnected ?? null,
+                wsConnected: workerHealth?.alchemyWsConnected ?? null,
                 dbConnected: workerHealth?.dbConnected ?? null
             },
             ingestion: {

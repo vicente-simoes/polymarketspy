@@ -2,6 +2,7 @@
 
 import { Sidebar } from "@/components/sidebar"
 import { Header } from "@/components/header"
+import { ExternalLink } from "lucide-react"
 import useSWR from "swr"
 import { fetcher } from "@/lib/fetcher"
 import { useMemo, useState } from "react"
@@ -9,6 +10,7 @@ import { useMemo, useState } from "react"
 interface TradeRow {
     id: string
     source: string
+    txHash?: string | null
     profileWallet: string
     proxyWallet?: string | null
     userLabel?: string | null
@@ -272,8 +274,20 @@ export default function TradesPage() {
                                                                 const isPending = trade.enrichmentStatus === "PENDING"
                                                                 return (
                                                                     <>
-                                                                        <div className={`font-medium ${isPending ? "text-[#6f6f6f] italic" : ""}`}>
-                                                                            {market}
+                                                                        <div className={`font-medium ${isPending ? "text-[#6f6f6f] italic" : ""} flex items-center gap-2`}>
+                                                                            <span>{market}</span>
+                                                                            {trade.txHash && (
+                                                                                <a
+                                                                                    href={`https://polygonscan.com/tx/${trade.txHash}`}
+                                                                                    target="_blank"
+                                                                                    rel="noopener noreferrer"
+                                                                                    className="text-[#6f6f6f] hover:text-[#86efac] transition-colors"
+                                                                                    title="View on PolygonScan"
+                                                                                    onClick={(e) => e.stopPropagation()}
+                                                                                >
+                                                                                    <ExternalLink size={12} />
+                                                                                </a>
+                                                                            )}
                                                                         </div>
                                                                         <div className="text-xs text-[#6f6f6f] font-mono">
                                                                             {asset}

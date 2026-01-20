@@ -202,7 +202,6 @@ export default function CopyAttemptsPage() {
                                             <tr className="text-[#6f6f6f] border-b border-[#27272A] text-sm">
                                                 <th className="pb-3 px-3">Time</th>
                                                 <th className="pb-3 px-3">User</th>
-                                                <th className="pb-3 px-3">Scope</th>
                                                 <th className="pb-3 px-3">Decision</th>
                                                 <th className="pb-3 px-3">Market</th>
                                                 <th className="pb-3 px-3 text-right">Target</th>
@@ -252,13 +251,6 @@ export default function CopyAttemptsPage() {
                                                             </td>
                                                             <td className="py-4 px-3 text-sm text-white">
                                                                 {attempt.followedUser?.label || "Global"}
-                                                            </td>
-                                                            <td className="py-4 px-3 text-sm text-white">
-                                                                <span className="rounded-full bg-[#1A1A1A] px-2 py-1 text-xs text-[#cfcfcf]">
-                                                                    {attempt.portfolioScope === "EXEC_GLOBAL"
-                                                                        ? "GLOBAL"
-                                                                        : "USER"}
-                                                                </span>
                                                             </td>
                                                             <td className="py-4 px-3">
                                                                 <span
@@ -328,7 +320,7 @@ export default function CopyAttemptsPage() {
                                                 })
                                             ) : (
                                                 <tr>
-                                                    <td colSpan={10} className="py-8 text-center text-[#6f6f6f]">
+                                                    <td colSpan={9} className="py-8 text-center text-[#6f6f6f]">
                                                         No copy attempts match these filters
                                                     </td>
                                                 </tr>
