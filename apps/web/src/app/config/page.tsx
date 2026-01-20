@@ -380,6 +380,8 @@ export default function ConfigPage() {
     const [initialBankrollUsd, setInitialBankrollUsd] = useState(
         String(systemDefaults.initialBankrollMicros / 1_000_000)
     )
+    const [depositUsd, setDepositUsd] = useState("")
+    const [depositing, setDepositing] = useState(false)
 
     useEffect(() => {
         if (!selectedUserId && users?.length) {
@@ -514,6 +516,37 @@ export default function ConfigPage() {
             })
         } finally {
             setSavingSystem(false)
+        }
+    }
+
+    const handleDepositCash = async () => {
+        try {
+            setDepositing(true)
+            const parsed = Number.parseFloat(depositUsd)
+            if (!Number.isFinite(parsed) || parsed <= 0) {
+                throw new Error("Invalid deposit")
+            }
+
+            const response = await fetch("/api/portfolio/global/deposit", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ amountUsd: parsed })
+            })
+            if (!response.ok) {
+                throw new Error("Failed to deposit cash")
+            }
+
+            setDepositUsd("")
+            mutate("/api/portfolio/global")
+            toast({ title: "Deposited", description: "Cash added to global execution portfolio." })
+        } catch (error) {
+            toast({
+                variant: "destructive",
+                title: "Deposit failed",
+                description: "Check deposit value for invalid numbers."
+            })
+        } finally {
+            setDepositing(false)
         }
     }
 
@@ -824,6 +857,32 @@ export default function ConfigPage() {
                                             suffix="USDC"
                                             helper="Used for EXEC_GLOBAL cash + equity."
                                         />
+                                    </div>
+                                    <div className="mt-6 border-t border-[#27272A] pt-6">
+                                        <div className="flex items-center justify-between gap-4">
+                                            <div>
+                                                <div className="text-sm text-[#6f6f6f]">Inject cash</div>
+                                                <div className="text-xs text-[#6f6f6f]">
+                                                    Adds a DEPOSIT ledger entry (does not change initial bankroll).
+                                                </div>
+                                            </div>
+                                            <Button
+                                                onClick={handleDepositCash}
+                                                disabled={depositing}
+                                                className="bg-[#86efac] text-black hover:bg-[#4ade80]"
+                                            >
+                                                {depositing ? "Depositing..." : "Deposit"}
+                                            </Button>
+                                        </div>
+                                        <div className="mt-4 grid grid-cols-1 gap-4">
+                                            <Field
+                                                label="Deposit amount"
+                                                value={depositUsd}
+                                                onChange={setDepositUsd}
+                                                suffix="USDC"
+                                                helper="Takes effect on the next snapshot tick (~1 minute)."
+                                            />
+                                        </div>
                                     </div>
                                 </div>
 

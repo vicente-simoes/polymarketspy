@@ -44,6 +44,7 @@ enum LedgerEntryType {
   TRADE_FILL
   MERGE
   SPLIT
+  DEPOSIT
   FEE
   MARK
   SETTLEMENT
