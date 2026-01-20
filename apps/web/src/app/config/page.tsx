@@ -441,12 +441,14 @@ export default function ConfigPage() {
         try {
             setSavingGlobal(true)
             const guardrails = buildGuardrailsPayload(globalGuardrailsForm, false)
-            await fetch("/api/config/global", {
+            const response = await fetch("/api/config/global", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ guardrails })
             })
-            setGlobalInitialized(false)
+            if (!response.ok) {
+                throw new Error("Failed to save global guardrails")
+            }
             await mutateGlobal()
             toast({ title: "Saved", description: "Global guardrails updated." })
         } catch (error) {
@@ -464,12 +466,14 @@ export default function ConfigPage() {
         try {
             setSavingGlobal(true)
             const sizing = buildSizingPayload(globalSizingForm, false)
-            await fetch("/api/config/global", {
+            const response = await fetch("/api/config/global", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ sizing })
             })
-            setGlobalInitialized(false)
+            if (!response.ok) {
+                throw new Error("Failed to save global sizing")
+            }
             await mutateGlobal()
             toast({ title: "Saved", description: "Global sizing updated." })
         } catch (error) {
@@ -492,12 +496,14 @@ export default function ConfigPage() {
             }
             const initialBankrollMicros = Math.round(parsed * 1_000_000)
 
-            await fetch("/api/config/global", {
+            const response = await fetch("/api/config/global", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ system: { initialBankrollMicros } })
             })
-            setSystemInitialized(false)
+            if (!response.ok) {
+                throw new Error("Failed to save bankroll")
+            }
             await mutateGlobal()
             toast({ title: "Saved", description: "Initial bankroll updated." })
         } catch (error) {
@@ -517,12 +523,14 @@ export default function ConfigPage() {
             setSavingUser(true)
             const guardrails = buildGuardrailsPayload(userGuardrailsForm, true)
             const sizing = buildSizingPayload(userSizingForm, true)
-            await fetch(`/api/config/user/${selectedUserId}`, {
+            const response = await fetch(`/api/config/user/${selectedUserId}`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ guardrails, sizing })
             })
-            setUserInitialized(false)
+            if (!response.ok) {
+                throw new Error("Failed to save user overrides")
+            }
             if (userConfigKey) {
                 await mutate(userConfigKey)
             }
