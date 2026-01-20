@@ -1,78 +1,77 @@
 # syntax=docker/dockerfile:1
 
 # ============================================
-# Web Dockerfile - Next.js standalone build
+# Web Dockerfile - Next.js standalone build (Debian/glibc)
 # ============================================
 
 # Stage 1: Base with pnpm
-FROM node:20-alpine AS base
-RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
+FROM node:20-bookworm-slim AS base
 WORKDIR /app
+
+# Needed for Prisma + HTTPS
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends openssl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
 
 # Stage 2: Install dependencies
 FROM base AS deps
-# Copy package files for dependency installation
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/web/package.json ./apps/web/
 COPY packages/shared/package.json ./packages/shared/
-
-# Install all dependencies (including devDependencies for build)
 RUN pnpm install --frozen-lockfile
 
 # Stage 3: Build
 FROM base AS builder
-WORKDIR /app
 
-# Copy dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/apps/web/node_modules ./apps/web/node_modules
 COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
 
-# Copy source files
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY prisma ./prisma
 COPY packages/shared ./packages/shared
 COPY apps/web ./apps/web
 
-# Generate Prisma client
+# Prisma client (if your web app imports @prisma/client anywhere)
 RUN pnpm prisma generate
 
 # Build shared package first
 RUN pnpm --filter @copybot/shared build
 
-# Build web app (Next.js with standalone output)
+# Build web app (Next.js standalone output)
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm --filter web build
 
 # Stage 4: Production runner
-FROM node:20-alpine AS runner
+FROM node:20-bookworm-slim AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
 
-# Create non-root user for security
-RUN addgroup --system --gid 1001 nodejs && \
-    adduser --system --uid 1001 nextjs
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN groupadd --system --gid 1001 nodejs \
+  && useradd --system --uid 1001 --gid 1001 nextjs
 
 # Copy public assets
 COPY --from=builder /app/apps/web/public ./public
 
-# Set correct permissions for prerender cache
-RUN mkdir .next && chown nextjs:nodejs .next
-
-# Copy standalone build (includes node_modules subset needed)
+# Standalone output (includes minimal node_modules)
 COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/static ./apps/web/.next/static
 
-# Switch to non-root user
-USER nextjs
+# Optional: Next cache dir for runtime writes (safe even if unused)
+RUN mkdir -p .next && chown -R nextjs:nodejs .next
 
-# Expose port
+USER nextjs
 EXPOSE 3000
 
-ENV PORT=3000
-ENV HOSTNAME="0.0.0.0"
-
-# Run the Next.js server
 CMD ["node", "apps/web/server.js"]
