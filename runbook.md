@@ -57,3 +57,10 @@ Local Development (recommended workflow):
   Production Deployment (on droplet):
   # Create .env with real secrets, then:
   docker compose -f docker/docker-compose.yml up -d --build
+
+
+ssh polybot@165.22.205.182
+
+pass:polymarket-bot
+
+pass (inside): jocavice
