@@ -1,14 +1,14 @@
 # syntax=docker/dockerfile:1
 
 # ============================================
-# Worker Dockerfile - Multi-stage build (Debian/glibc)
+# Worker Dockerfile - Multi-stage build (Debian)
 # ============================================
 
-# Stage 1: Base with pnpm
+# Stage 1: Base with pnpm (Debian)
 FROM node:20-bookworm-slim AS base
 WORKDIR /app
 
-# Needed for Prisma + HTTPS
+# Tools Prisma needs + CA certs
 RUN apt-get update \
   && apt-get install -y --no-install-recommends openssl ca-certificates \
   && rm -rf /var/lib/apt/lists/*
@@ -24,7 +24,6 @@ RUN pnpm install --frozen-lockfile
 
 # Stage 3: Build
 FROM base AS builder
-
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/apps/worker/node_modules ./apps/worker/node_modules
 COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
@@ -34,11 +33,12 @@ COPY prisma ./prisma
 COPY packages/shared ./packages/shared
 COPY apps/worker ./apps/worker
 
+# IMPORTANT: Prisma generate happens on Debian now (correct engine)
 RUN pnpm prisma generate
 RUN pnpm --filter @copybot/shared build
 RUN pnpm --filter @copybot/worker build
 
-# Stage 4: Production runner
+# Stage 4: Production runner (Debian)
 FROM node:20-bookworm-slim AS runner
 WORKDIR /app
 
