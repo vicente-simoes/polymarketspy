@@ -111,33 +111,6 @@ async function getCashBalance(
 }
 
 /**
- * Get realized PnL for a portfolio (from closed positions).
- */
-async function getRealizedPnl(
-    scope: PortfolioScope,
-    followedUserId: string | null
-): Promise<bigint> {
-    // For now, we track realized PnL as the sum of all ledger entries
-    // where assetId is null (pure cash movements from settlements, etc.)
-    // This is a simplification - proper realized PnL would track closed trades
-    const result = await prisma.ledgerEntry.aggregate({
-        where: {
-            portfolioScope: scope,
-            ...(scope === PortfolioScope.EXEC_GLOBAL && followedUserId === null
-                ? {}
-                : { followedUserId }),
-            assetId: null,
-            entryType: { in: ["MERGE", "SPLIT", "SETTLEMENT"] },
-        },
-        _sum: {
-            cashDeltaMicros: true,
-        },
-    });
-
-    return result._sum?.cashDeltaMicros ?? BigInt(0);
-}
-
-/**
  * Compute and write snapshot for a single portfolio.
  */
 async function computePortfolioSnapshot(
@@ -157,6 +130,7 @@ async function computePortfolioSnapshot(
 
         // Calculate position values and exposure
         let totalExposureMicros = BigInt(0);
+        let totalPositionValueMicros = BigInt(0);
         let totalUnrealizedPnlMicros = BigInt(0);
 
         for (const pos of positions) {
@@ -169,6 +143,9 @@ async function computePortfolioSnapshot(
             // Exposure is absolute value of position
             const absValue = positionValueMicros < BigInt(0) ? -positionValueMicros : positionValueMicros;
             totalExposureMicros += absValue;
+
+            // Net position value contributes to equity
+            totalPositionValueMicros += positionValueMicros;
 
             // Unrealized PnL = current value - cost basis
             totalUnrealizedPnlMicros += positionValueMicros - pos.costBasisMicros;
@@ -189,11 +166,13 @@ async function computePortfolioSnapshot(
         // Get cash balance
         const cashMicros = await getCashBalance(scope, followedUserId, initialCashMicros);
 
-        // Get realized PnL
-        const realizedPnlMicros = await getRealizedPnl(scope, followedUserId);
+        // Equity = cash + net position value
+        const equityMicros = cashMicros + totalPositionValueMicros;
 
-        // Equity = cash + position value (exposure represents position value here)
-        const equityMicros = cashMicros + totalExposureMicros;
+        // Total PnL should always reconcile to equity - initial capital.
+        // Realized PnL is the remainder after subtracting unrealized PnL from total PnL.
+        const totalPnlMicros = equityMicros - initialCashMicros;
+        const realizedPnlMicros = totalPnlMicros - totalUnrealizedPnlMicros;
 
         // Write snapshot - handle null followedUserId specially for Prisma compound unique
         const snapshotData = {
