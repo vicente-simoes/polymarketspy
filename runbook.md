@@ -41,6 +41,7 @@ Follow the logs of the database and redis containers.
 docker compose -f docker/docker-compose.yml logs -f
 ```
 
+test
 
 
 Local Development (recommended workflow):
