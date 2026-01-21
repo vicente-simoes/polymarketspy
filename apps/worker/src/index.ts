@@ -12,6 +12,7 @@ import { startEnrichmentProcessor, stopEnrichmentProcessor } from "./enrichment/
 import { loadResolvedTokensFromRedis, setRedisClient } from "./poly/index.js";
 import { stopBookService } from "./simulate/bookService.js";
 import { env } from "./config/env.js";
+import { startSettlementLoop, stopSettlementLoop } from "./settlement.js";
 
 async function main() {
     logger.info("Worker starting...");
@@ -80,6 +81,9 @@ async function main() {
     // Start snapshot loops (price refresh every 30s, portfolio snapshots every minute)
     startSnapshotLoops();
 
+    // Start settlement loop (closes resolved positions and credits payout)
+    startSettlementLoop();
+
     logger.info("Worker started successfully");
 
     // Graceful shutdown
@@ -87,6 +91,7 @@ async function main() {
         logger.info("Shutting down...");
         stopPolling();
         stopSnapshotLoops();
+        stopSettlementLoop();
         stopEnrichmentProcessor();
         await flushAllGroups(); // Flush any pending aggregation groups
         await flushPendingReconciles(); // Flush any pending reconcile batches

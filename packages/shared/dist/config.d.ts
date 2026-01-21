@@ -38,7 +38,6 @@ export declare const GuardrailsSchema: z.ZodObject<{
     maxDrawdownLimitBps: z.ZodDefault<z.ZodNumber>;
 }, "strip", z.ZodTypeAny, {
     maxWorseningVsTheirFillMicros: number;
-    maxBuyCostPerShareMicros?: number | undefined;
     maxOverMidMicros: number;
     maxSpreadMicros: number;
     minDepthMultiplierBps: number;
@@ -51,6 +50,7 @@ export declare const GuardrailsSchema: z.ZodObject<{
     dailyLossLimitBps: number;
     weeklyLossLimitBps: number;
     maxDrawdownLimitBps: number;
+    maxBuyCostPerShareMicros?: number | undefined;
 }, {
     maxWorseningVsTheirFillMicros?: number | undefined;
     maxBuyCostPerShareMicros?: number | undefined;

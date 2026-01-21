@@ -42,6 +42,10 @@ const GammaMarketSchema = z.object({
     endDate: z.string().optional().nullable(),
     endDateIso: z.string().optional().nullable(),
 
+    // Resolution / payout fields
+    umaResolutionStatus: z.string().optional().nullable(),
+    outcomePrices: z.string().optional().nullable(),
+
     tokens: z.array(GammaTokenSchema).optional(),
     clobTokenIds: z.string().optional().nullable(),
     outcomes: z.string().optional().nullable(),
@@ -70,6 +74,13 @@ export interface TokenMetadata {
 }
 
 type QueryParamValue = string | string[];
+
+/**
+ * Per-share payout for a resolved token.
+ * - Winning outcome token: 1.0 USDC per share (1_000_000 micros)
+ * - Losing outcome token: 0
+ */
+export type TokenPayoutPerShareMicros = number;
 
 /**
  * Make a rate-limited request to Gamma API.
@@ -248,6 +259,161 @@ export async function fetchTokenMetadata(
         return result;
     } catch (err) {
         logger.error({ err, tokenIds }, "Failed to fetch token metadata from Gamma");
+        throw err;
+    }
+}
+
+/**
+ * Fetch per-share payout (in USDC micros) for tokens that have resolved.
+ *
+ * Returns a Map of tokenId -> payoutPerShareMicros for tokens whose markets are
+ * resolved (as indicated by Gamma's `winner` flags). Unresolved tokens are
+ * omitted from the Map.
+ */
+export async function fetchResolvedTokenPayouts(
+    tokenIds: string[]
+): Promise<Map<string, TokenPayoutPerShareMicros>> {
+    const uniqueTokenIds = Array.from(new Set(tokenIds)).filter((id) => /^\d+$/.test(id));
+    if (uniqueTokenIds.length === 0) {
+        return new Map();
+    }
+
+    const result = new Map<string, TokenPayoutPerShareMicros>();
+
+    const requestedTokenIdsSet = new Set(uniqueTokenIds);
+
+    const parseJsonStringArray = (value: string | null | undefined): string[] | null => {
+        if (!value) return null;
+        try {
+            const parsed = JSON.parse(value);
+            if (
+                Array.isArray(parsed) &&
+                parsed.every((item) => typeof item === "string")
+            ) {
+                return parsed;
+            }
+        } catch {
+            // ignore
+        }
+        return null;
+    };
+
+    const parseJsonNumberishArray = (value: string | null | undefined): Array<number> | null => {
+        if (!value) return null;
+        try {
+            const parsed = JSON.parse(value);
+            if (Array.isArray(parsed)) {
+                const numbers = parsed
+                    .map((item) =>
+                        typeof item === "number"
+                            ? item
+                            : typeof item === "string"
+                              ? parseFloat(item)
+                              : NaN
+                    )
+                    .filter((n) => Number.isFinite(n));
+                if (numbers.length === parsed.length) {
+                    return numbers;
+                }
+            }
+        } catch {
+            // ignore
+        }
+        return null;
+    };
+
+    const extractPayoutsFromMarkets = (markets: GammaMarket[]) => {
+        for (const market of markets) {
+            const tokens = market.tokens ?? [];
+
+            // Path A: explicit token winner flags (preferred when present).
+            if (tokens.length > 0) {
+                const winningTokenIds = tokens
+                    .filter((t) => t.winner === true)
+                    .map((t) => t.token_id);
+
+                // If we don't have a declared winner, the market isn't resolved (or Gamma data is incomplete).
+                if (winningTokenIds.length === 0) continue;
+
+                const winningSet = new Set(winningTokenIds);
+                for (const token of tokens) {
+                    if (!requestedTokenIdsSet.has(token.token_id)) continue;
+                    result.set(token.token_id, winningSet.has(token.token_id) ? 1_000_000 : 0);
+                }
+                continue;
+            }
+
+            // Path B: fallback to outcomePrices + clobTokenIds when tokens[] are not included.
+            const umaStatus = (market.umaResolutionStatus ?? "").toLowerCase();
+            if (umaStatus !== "resolved") continue;
+
+            const clobTokenIds = parseJsonStringArray(market.clobTokenIds);
+            const outcomePrices = parseJsonNumberishArray(market.outcomePrices);
+            if (!clobTokenIds || !outcomePrices) continue;
+            if (clobTokenIds.length !== outcomePrices.length) continue;
+
+            // Treat as resolved only if all final prices are exactly 0 or 1.
+            const allBinary = outcomePrices.every((p) => p === 0 || p === 1);
+            if (!allBinary) continue;
+
+            for (let idx = 0; idx < clobTokenIds.length; idx++) {
+                const tokenId = clobTokenIds[idx]!;
+                if (!requestedTokenIdsSet.has(tokenId)) continue;
+                result.set(tokenId, outcomePrices[idx] === 1 ? 1_000_000 : 0);
+            }
+        }
+    };
+
+    try {
+        // Batch to avoid URL length limits (limit to 10 at a time).
+        const batchSize = 10;
+        for (let i = 0; i < uniqueTokenIds.length; i += batchSize) {
+            const batch = uniqueTokenIds.slice(i, i + batchSize);
+
+            logger.debug({ tokenCount: batch.length }, "Fetching token payouts from Gamma");
+
+            try {
+                const markets = await gammaRequest(
+                    "/markets",
+                    GammaMarketsResponseSchema,
+                    { clob_token_ids: batch }
+                );
+                extractPayoutsFromMarkets(markets);
+            } catch (err) {
+                // Gamma returns 422 for any invalid token id in the batch (all-or-nothing).
+                // Fall back to per-token requests to salvage valid data.
+                logger.warn(
+                    { err, tokenCount: batch.length },
+                    "Gamma batch payout request failed; retrying tokens individually"
+                );
+                for (const tokenId of batch) {
+                    try {
+                        const markets = await gammaRequest(
+                            "/markets",
+                            GammaMarketsResponseSchema,
+                            { clob_token_ids: [tokenId] }
+                        );
+                        extractPayoutsFromMarkets(markets);
+                    } catch (tokenErr) {
+                        logger.warn({ tokenErr, tokenId }, "Gamma payout lookup failed for token");
+                    }
+                }
+            }
+
+            // Small delay between batches to be nice to the API
+            if (i + batchSize < uniqueTokenIds.length) {
+                await new Promise((resolve) => setTimeout(resolve, 100));
+            }
+        }
+
+        logger.info(
+            { requested: uniqueTokenIds.length, resolved: result.size },
+            "Fetched resolved token payouts from Gamma"
+        );
+
+        return result;
+    } catch (err) {
+        logger.error({ err, tokenIds: uniqueTokenIds }, "Failed to fetch token payouts from Gamma");
         throw err;
     }
 }
