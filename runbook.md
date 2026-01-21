@@ -43,6 +43,7 @@ docker compose -f docker/docker-compose.yml logs -f
 
 
 
+
 Local Development (recommended workflow):
   # Start db + redis in Docker
   docker compose -f docker/docker-compose.dev.yml up -d
