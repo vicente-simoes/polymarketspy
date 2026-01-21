@@ -9,6 +9,11 @@ export const GuardrailsSchema = z.object({
     // Price protection
     /** Max worsening vs their fill price in micros (default: 10000 = $0.01) */
     maxWorseningVsTheirFillMicros: z.number().int().default(10_000),
+    /**
+     * Optional max BUY cost per share in micros (e.g. 970_000 = $0.97).
+     * If set, BUY trades with simulated VWAP >= this value are skipped.
+     */
+    maxBuyCostPerShareMicros: z.number().int().min(0).max(1_000_000).optional(),
     /** Max amount over mid price in micros (default: 15000 = $0.015) */
     maxOverMidMicros: z.number().int().default(15_000),
     /** Max spread in micros to execute (default: 20000 = $0.02) */

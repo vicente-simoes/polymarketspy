@@ -25,6 +25,7 @@ import { getBook } from "./bookService.js";
 import type { NormalizedBook } from "./bookUtils.js";
 import {
     checkSpreadFilter,
+    checkMaxBuyCostPerShare,
     checkDepthRequirement,
     computePriceBounds,
     checkPriceProtection,
@@ -309,6 +310,18 @@ export async function executeTradeGroup(
 
     // 9. Run guardrail checks
     if (simulation.success) {
+        // Optional guardrail: max buy cost per share (GLOBAL only)
+        if (portfolioScope === PortfolioScope.EXEC_GLOBAL) {
+            const maxBuyCostCheck = checkMaxBuyCostPerShare(
+                group.side,
+                simulation.vwapPriceMicros,
+                guardrails
+            );
+            if (!maxBuyCostCheck.passed) {
+                reasonCodes.push(...maxBuyCostCheck.reasonCodes);
+            }
+        }
+
         // Spread filter
         const spreadCheck = checkSpreadFilter(simulation.spreadMicros, guardrails);
         if (!spreadCheck.passed) {

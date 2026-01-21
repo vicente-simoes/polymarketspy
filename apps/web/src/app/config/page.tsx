@@ -44,6 +44,7 @@ interface TestConfigResult {
 
 type GuardrailsForm = {
     maxWorseningVsTheirFillCents: string
+    maxBuyCostPerShareCents: string
     maxOverMidCents: string
     maxSpreadCents: string
     minDepthMultiplier: string
@@ -114,6 +115,12 @@ const guardrailsToForm = (
         guardrailsDefaults.maxWorseningVsTheirFillMicros,
         (value) => value / 10_000,
         allowEmpty
+    ),
+    maxBuyCostPerShareCents: toFormValue(
+        config.maxBuyCostPerShareMicros,
+        0,
+        (value) => value / 10_000,
+        true
     ),
     maxOverMidCents: toFormValue(
         config.maxOverMidMicros,
@@ -243,6 +250,15 @@ const buildGuardrailsPayload = (form: GuardrailsForm, allowEmpty: boolean) => {
     add("maxWorseningVsTheirFillMicros", form.maxWorseningVsTheirFillCents, (value) =>
         Math.round(value * 10_000)
     )
+
+    if (form.maxBuyCostPerShareCents.trim() !== "") {
+        const parsed = parseNumber(form.maxBuyCostPerShareCents, "maxBuyCostPerShareCents")
+        if (parsed < 0 || parsed > 100) {
+            throw new Error("Invalid maxBuyCostPerShareCents")
+        }
+        payload.maxBuyCostPerShareMicros = Math.round(parsed * 10_000)
+    }
+
     add("maxOverMidMicros", form.maxOverMidCents, (value) => Math.round(value * 10_000))
     add("maxSpreadMicros", form.maxSpreadCents, (value) => Math.round(value * 10_000))
     add("minDepthMultiplierBps", form.minDepthMultiplier, (value) =>
@@ -685,6 +701,18 @@ export default function ConfigPage() {
                                         }
                                         suffix="cents"
                                         helper="Default 1.0c"
+                                    />
+                                    <Field
+                                        label="Max Buy Cost per Share"
+                                        value={globalGuardrailsForm.maxBuyCostPerShareCents}
+                                        onChange={(value) =>
+                                            setGlobalGuardrailsForm((prev) => ({
+                                                ...prev,
+                                                maxBuyCostPerShareCents: value
+                                            }))
+                                        }
+                                        suffix="cents"
+                                        helper="Leave blank to disable (e.g. 97 or 99.8)."
                                     />
                                     <Field
                                         label="Max Over Mid"

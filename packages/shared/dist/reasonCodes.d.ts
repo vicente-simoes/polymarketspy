@@ -7,6 +7,8 @@ export declare const ReasonCodes: {
     readonly RISK_CAP_GLOBAL: "RISK_CAP_GLOBAL";
     /** Per-user risk cap exceeded */
     readonly RISK_CAP_USER: "RISK_CAP_USER";
+    /** BUY cost per share exceeds configured maximum */
+    readonly BUY_COST_PER_SHARE_TOO_HIGH: "BUY_COST_PER_SHARE_TOO_HIGH";
     /** Order book spread exceeds max allowed ($0.02) */
     readonly SPREAD_TOO_WIDE: "SPREAD_TOO_WIDE";
     /** Not enough depth at acceptable price levels */

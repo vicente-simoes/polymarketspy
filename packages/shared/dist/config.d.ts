@@ -7,6 +7,11 @@ import { z } from "zod";
 export declare const GuardrailsSchema: z.ZodObject<{
     /** Max worsening vs their fill price in micros (default: 10000 = $0.01) */
     maxWorseningVsTheirFillMicros: z.ZodDefault<z.ZodNumber>;
+    /**
+     * Optional max BUY cost per share in micros (e.g. 970_000 = $0.97).
+     * If set, BUY trades with simulated VWAP >= this value are skipped.
+     */
+    maxBuyCostPerShareMicros: z.ZodOptional<z.ZodNumber>;
     /** Max amount over mid price in micros (default: 15000 = $0.015) */
     maxOverMidMicros: z.ZodDefault<z.ZodNumber>;
     /** Max spread in micros to execute (default: 20000 = $0.02) */
@@ -33,6 +38,7 @@ export declare const GuardrailsSchema: z.ZodObject<{
     maxDrawdownLimitBps: z.ZodDefault<z.ZodNumber>;
 }, "strip", z.ZodTypeAny, {
     maxWorseningVsTheirFillMicros: number;
+    maxBuyCostPerShareMicros?: number | undefined;
     maxOverMidMicros: number;
     maxSpreadMicros: number;
     minDepthMultiplierBps: number;
@@ -47,6 +53,7 @@ export declare const GuardrailsSchema: z.ZodObject<{
     maxDrawdownLimitBps: number;
 }, {
     maxWorseningVsTheirFillMicros?: number | undefined;
+    maxBuyCostPerShareMicros?: number | undefined;
     maxOverMidMicros?: number | undefined;
     maxSpreadMicros?: number | undefined;
     minDepthMultiplierBps?: number | undefined;

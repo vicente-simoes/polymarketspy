@@ -69,3 +69,26 @@ docker exec -it polymarket-db psql -U copybot -d copybot -c \
 "INSERT INTO \"AllowedAdminEmail\" (\"id\",\"email\")
  VALUES (gen_random_uuid(), 'vicente.pt.simoes@gmail.com')
  ON CONFLICT (\"email\") DO NOTHING;"
+
+
+
+cd ~/apps/polymarketspy/docker
+
+# stop everything
+docker compose down
+
+# delete the postgres data volume (THIS DELETES ALL DB DATA)
+docker volume rm docker_pgdata
+
+# bring db back up
+docker compose up -d db
+
+# run migrations (pick ONE of these options)
+# 1) if you have migration files in /app/prisma/migrations:
+docker compose run --rm worker sh -lc 'cd /app && npx prisma migrate deploy'
+
+# OR 2) if you DON'T have migrations and just want schema pushed:
+# docker compose run --rm worker sh -lc 'cd /app && npx prisma db push'
+
+# start the rest
+docker compose up -d

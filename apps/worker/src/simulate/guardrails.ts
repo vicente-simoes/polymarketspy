@@ -102,6 +102,27 @@ export function checkSpreadFilter(
 }
 
 /**
+ * Optional guardrail: skip BUYs when cost per share is too high.
+ * Interprets "cost per share" as the simulated VWAP price.
+ */
+export function checkMaxBuyCostPerShare(
+    side: TradeSide,
+    vwapPriceMicros: number,
+    guardrails: Guardrails
+): GuardrailCheckResult {
+    const maxBuyCost = guardrails.maxBuyCostPerShareMicros;
+    if (side !== TradeSide.BUY || typeof maxBuyCost !== "number") {
+        return { passed: true, reasonCodes: [] };
+    }
+
+    if (vwapPriceMicros >= maxBuyCost) {
+        return { passed: false, reasonCodes: [ReasonCodes.BUY_COST_PER_SHARE_TOO_HIGH] };
+    }
+
+    return { passed: true, reasonCodes: [] };
+}
+
+/**
  * Check depth requirement.
  * Require available notional >= minDepthMultiplier * target notional.
  */
@@ -313,6 +334,14 @@ export async function runAllGuardrailChecks(
     scope: "USER" | "GLOBAL"
 ): Promise<GuardrailCheckResult> {
     const allReasons: ReasonCode[] = [];
+
+    // 0. Max buy cost per share (GLOBAL only)
+    if (scope === "GLOBAL") {
+        const buyCostCheck = checkMaxBuyCostPerShare(side, simulation.vwapPriceMicros, guardrails);
+        if (!buyCostCheck.passed) {
+            allReasons.push(...buyCostCheck.reasonCodes);
+        }
+    }
 
     // 1. Spread filter
     const spreadCheck = checkSpreadFilter(simulation.spreadMicros, guardrails);
