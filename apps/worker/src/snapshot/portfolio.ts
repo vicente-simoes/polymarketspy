@@ -10,7 +10,7 @@
  * - Apply ledger entries since last snapshot
  */
 
-import { PortfolioScope } from "@prisma/client";
+import { LedgerEntryType, PortfolioScope } from "@prisma/client";
 import { prisma } from "../db/prisma.js";
 import { createChildLogger } from "../log/logger.js";
 import { getLatestPrices } from "./prices.js";
@@ -111,6 +111,31 @@ async function getCashBalance(
 }
 
 /**
+ * Get net external cash flows (deposits/withdrawals) for a portfolio.
+ *
+ * Today we only support DEPOSIT into EXEC_GLOBAL via the web API.
+ * These are equity-neutral contributions and should not be counted as PnL.
+ */
+async function getNetExternalFlows(
+    scope: PortfolioScope,
+    followedUserId: string | null
+): Promise<bigint> {
+    const result = await prisma.ledgerEntry.aggregate({
+        where: {
+            portfolioScope: scope,
+            ...(scope === PortfolioScope.EXEC_GLOBAL && followedUserId === null
+                ? {}
+                : { followedUserId }),
+            assetId: null,
+            entryType: LedgerEntryType.DEPOSIT,
+        },
+        _sum: { cashDeltaMicros: true },
+    });
+
+    return result._sum?.cashDeltaMicros ?? BigInt(0);
+}
+
+/**
  * Compute and write snapshot for a single portfolio.
  */
 async function computePortfolioSnapshot(
@@ -170,8 +195,12 @@ async function computePortfolioSnapshot(
         const equityMicros = cashMicros + totalPositionValueMicros;
 
         // Total PnL should always reconcile to equity - initial capital.
+        // If we injected additional capital (deposits), exclude that from PnL.
+        const netExternalFlowsMicros = await getNetExternalFlows(scope, followedUserId);
+        const contributedCapitalMicros = initialCashMicros + netExternalFlowsMicros;
+
         // Realized PnL is the remainder after subtracting unrealized PnL from total PnL.
-        const totalPnlMicros = equityMicros - initialCashMicros;
+        const totalPnlMicros = equityMicros - contributedCapitalMicros;
         const realizedPnlMicros = totalPnlMicros - totalUnrealizedPnlMicros;
 
         // Write snapshot - handle null followedUserId specially for Prisma compound unique
