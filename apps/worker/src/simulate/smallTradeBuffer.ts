@@ -283,6 +283,87 @@ export interface AppendResult {
 }
 
 /**
+ * Check if an existing bucket exists for the given position.
+ * Used to determine if a large trade should merge with pending small trades.
+ */
+export async function checkBucketExists(
+    followedUserId: string,
+    tokenId: string,
+    side: TradeSide,
+    nettingMode: "sameSideOnly" | "netBuySell"
+): Promise<boolean> {
+    const bucketKey = generateBucketKey(followedUserId, tokenId, side, nettingMode);
+    const bucket = await getBucket(bucketKey);
+    return bucket !== null && bucket.countTradesBuffered > 0;
+}
+
+/**
+ * Merge a trade into an existing bucket and flush immediately.
+ * Used when a large trade should merge with pending small trades.
+ * Returns the flush result, or null if no bucket exists.
+ */
+export async function mergeAndFlushBucket(
+    input: BufferTradeInput,
+    config: SmallTradeBuffering
+): Promise<FlushResult | null> {
+    const { followedUserId, tokenId, marketId, side, copyNotionalMicros, copyShareMicros, priceMicros, tradeEventId } = input;
+    const bucketKey = generateBucketKey(followedUserId, tokenId, side, config.nettingMode);
+    const now = Date.now();
+
+    // Get existing bucket
+    let bucket = await getBucket(bucketKey);
+    if (!bucket || bucket.countTradesBuffered === 0) {
+        return null; // No existing bucket to merge with
+    }
+
+    // Signed notional: BUY is positive, SELL is negative
+    const signedNotional = side === TradeSide.BUY ? copyNotionalMicros : -copyNotionalMicros;
+    const signedShares = side === TradeSide.BUY ? copyShareMicros : -copyShareMicros;
+
+    // Update existing bucket with the new trade
+    const newNetNotional = bucket.netNotionalMicros + signedNotional;
+    const newNetShares = bucket.netShareMicros + signedShares;
+
+    // Update VWAP reference price
+    const totalNotional = absBI(bucket.netNotionalMicros) + absBI(signedNotional);
+    const weightedPrice =
+        totalNotional > 0n
+            ? Number(
+                  (absBI(bucket.netNotionalMicros) * BigInt(bucket.referencePriceMicros) +
+                      absBI(signedNotional) * BigInt(priceMicros)) /
+                      totalNotional
+              )
+            : priceMicros;
+
+    bucket = {
+        ...bucket,
+        netNotionalMicros: newNetNotional,
+        netShareMicros: newNetShares,
+        lastUpdatedAtMs: now,
+        countTradesBuffered: bucket.countTradesBuffered + 1,
+        referencePriceMicros: weightedPrice,
+        tradeEventIds: [...bucket.tradeEventIds, tradeEventId],
+    };
+
+    // Save the merged bucket temporarily (for flush to read)
+    await saveBucket(bucket);
+
+    logger.info(
+        {
+            bucketKey,
+            netNotional: bucket.netNotionalMicros.toString(),
+            count: bucket.countTradesBuffered,
+            reason: "Large trade merged with pending small trades",
+        },
+        "Merging large trade with existing bucket and flushing"
+    );
+
+    // Flush immediately with "threshold" reason (large trade triggered it)
+    const result = await flushBucket(bucketKey, "threshold", config);
+    return result;
+}
+
+/**
  * Append a trade to the buffer.
  * Returns whether the trade was buffered or should execute immediately.
  */
@@ -293,6 +374,7 @@ export async function appendTrade(
     const { followedUserId, tokenId, marketId, side, copyNotionalMicros, copyShareMicros, priceMicros, tradeEventId } = input;
 
     // Check if this trade is "small" (should be buffered)
+    // Note: Large trades are handled in processor.ts which checks for existing buckets first
     if (copyNotionalMicros >= BigInt(config.notionalThresholdMicros)) {
         metrics.immediateTrades++;
         logger.debug(

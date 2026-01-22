@@ -39,8 +39,9 @@ let isShuttingDown = false;
 
 /**
  * Convert a flushed bucket to a TradeEventGroup for execution.
+ * Exported for use by processor.ts when merging large trades with existing buckets.
  */
-function bucketToTradeEventGroup(bucket: Bucket): TradeEventGroup {
+export function bucketToTradeEventGroup(bucket: Bucket): TradeEventGroup {
     const windowStart = new Date(bucket.firstSeenAtMs);
 
     // Determine the effective side from the net position

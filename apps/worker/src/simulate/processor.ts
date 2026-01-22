@@ -28,7 +28,8 @@ import {
 import type { ActivityPayload } from "../poly/types.js";
 import { ensureSubscribed } from "./bookService.js";
 import { getGlobalConfig } from "./config.js";
-import { appendTrade, type BufferTradeInput } from "./smallTradeBuffer.js";
+import { appendTrade, mergeAndFlushBucket, type BufferTradeInput } from "./smallTradeBuffer.js";
+import { bucketToTradeEventGroup } from "./flushLoop.js";
 import { computeTargetShares } from "./sizing.js";
 
 const logger = createChildLogger({ module: "group-events-processor" });
@@ -182,8 +183,48 @@ async function processTradeForAggregation(
         "Checking if trade is small"
     );
 
-    // If copy notional >= threshold, execute immediately (bypass aggregator and buffer)
+    // If copy notional >= threshold, check if there's an existing bucket to merge with
     if (rawCopyNotional >= BigInt(smallTradeBuffering.notionalThresholdMicros)) {
+        // First, check if there's a bucket with pending small trades for this position
+        const copyShareMicros = computeTargetShares(rawCopyNotional, trade.priceMicros);
+        const bufferInput: BufferTradeInput = {
+            followedUserId,
+            tokenId: effectiveTokenId,
+            marketId: trade.marketId,
+            side: trade.side,
+            copyNotionalMicros: rawCopyNotional,
+            copyShareMicros,
+            priceMicros: trade.priceMicros,
+            tradeEventId: trade.id,
+        };
+
+        const mergeResult = await mergeAndFlushBucket(bufferInput, smallTradeBuffering);
+
+        if (mergeResult && mergeResult.executed) {
+            // Large trade was merged with existing small trades and flushed
+            log.info(
+                {
+                    rawCopyNotional: rawCopyNotional.toString(),
+                    mergedCount: mergeResult.bucket.countTradesBuffered,
+                },
+                "Large trade merged with pending small trades and flushed"
+            );
+
+            // Convert merged bucket to group and enqueue
+            const group = bucketToTradeEventGroup(mergeResult.bucket);
+            const queueGroup = serializeEventGroup(group);
+
+            await queues.copyAttemptGlobal.add("copy-attempt-global", {
+                group: queueGroup,
+                portfolioScope: "EXEC_GLOBAL",
+                sourceType: "BUFFER",
+                bufferedTradeCount: mergeResult.bucket.countTradesBuffered,
+            });
+
+            return;
+        }
+
+        // No existing bucket to merge with - execute immediately as single trade
         log.info(
             { rawCopyNotional: rawCopyNotional.toString() },
             "Trade above threshold, executing immediately"
