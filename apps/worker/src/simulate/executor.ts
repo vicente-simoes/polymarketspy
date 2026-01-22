@@ -34,7 +34,7 @@ import {
     isReducingExposure,
     type PortfolioState,
 } from "./guardrails.js";
-import type { TradeEventGroup, ActivityEventGroup, EventGroup } from "./types.js";
+import type { TradeEventGroup, ActivityEventGroup, EventGroup, CopySourceType } from "./types.js";
 
 const logger = createChildLogger({ module: "executor" });
 
@@ -181,12 +181,21 @@ async function getPortfolioState(
 }
 
 /**
+ * Options for copy attempt execution.
+ */
+export interface CopyAttemptOptions {
+    sourceType?: CopySourceType;
+    bufferedTradeCount?: number;
+}
+
+/**
  * Execute a copy attempt for a trade event group.
  */
 export async function executeTradeGroup(
     group: TradeEventGroup,
     portfolioScope: PortfolioScope,
-    followedUserId: string | null
+    followedUserId: string | null,
+    options: CopyAttemptOptions = {}
 ): Promise<ExecutionResult> {
     // Use rawTokenId (on-chain) if available, otherwise assetId (API)
     const effectiveTokenId = group.rawTokenId ?? group.assetId;
@@ -407,12 +416,17 @@ export async function executeTradeGroup(
     // 11. Write CopyAttempt to database
     // Handle the upsert differently based on whether followedUserId is null
     // Prisma compound unique with nullable field requires special handling
+    const sourceType = options.sourceType ?? "AGGREGATOR";
+    const bufferedTradeCount = options.bufferedTradeCount ?? group.tradeEventIds.length;
+
     const copyAttemptData = {
         portfolioScope,
         followedUserId,
         groupKey: group.groupKey,
         decision,
         reasonCodes: uniqueReasons,
+        sourceType,
+        bufferedTradeCount,
         targetNotionalMicros: targetResult.targetNotionalMicros,
         filledNotionalMicros: decision === CopyDecision.EXECUTE ? simulation.filledNotionalMicros : BigInt(0),
         vwapPriceMicros: decision === CopyDecision.EXECUTE ? simulation.vwapPriceMicros : null,
@@ -565,14 +579,15 @@ export async function executeActivityGroup(
  */
 export async function executeCopyAttempt(
     group: EventGroup,
-    portfolioScope: PortfolioScope
+    portfolioScope: PortfolioScope,
+    options: CopyAttemptOptions = {}
 ): Promise<ExecutionResult> {
     // Single global execution portfolio, but we still attribute every attempt
     // to the followed user that triggered it (for overrides + reporting).
     const followedUserId = group.followedUserId;
 
     if (group.type === "trade") {
-        return executeTradeGroup(group, portfolioScope, followedUserId);
+        return executeTradeGroup(group, portfolioScope, followedUserId, options);
     } else {
         return executeActivityGroup(group, portfolioScope, followedUserId);
     }

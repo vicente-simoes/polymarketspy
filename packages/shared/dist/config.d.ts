@@ -121,3 +121,73 @@ export declare const SystemConfigSchema: z.ZodObject<{
     initialBankrollMicros?: number | undefined;
 }>;
 export type SystemConfig = z.infer<typeof SystemConfigSchema>;
+/**
+ * Netting mode for small trade buffering.
+ * - sameSideOnly: Buffer only same-side trades; opposite side flushes current bucket
+ * - netBuySell: Allow buys and sells to net within the same bucket (advanced)
+ */
+export declare const SmallTradeNettingMode: {
+    readonly SAME_SIDE_ONLY: "sameSideOnly";
+    readonly NET_BUY_SELL: "netBuySell";
+};
+export type SmallTradeNettingModeType = (typeof SmallTradeNettingMode)[keyof typeof SmallTradeNettingMode];
+/**
+ * Small trade buffering configuration schema.
+ * When enabled, buffers tiny copy trades and flushes them in batches.
+ * This reduces distortion from per-trade minimums and improves live execution.
+ *
+ * All monetary thresholds are in micros (6 decimal places).
+ */
+export declare const SmallTradeBufferingSchema: z.ZodObject<{
+    /** Whether small trade buffering is enabled (default: false) */
+    enabled: z.ZodDefault<z.ZodBoolean>;
+    /**
+     * Trades with copy notional below this threshold are considered "small" and buffered.
+     * Default: 250_000 = $0.25
+     */
+    notionalThresholdMicros: z.ZodDefault<z.ZodNumber>;
+    /**
+     * Minimum accumulated notional to trigger a flush.
+     * Default: 500_000 = $0.50
+     */
+    flushMinNotionalMicros: z.ZodDefault<z.ZodNumber>;
+    /**
+     * Hard minimum notional to actually submit an order on flush.
+     * If buffered notional < this on flush, skip (don't submit order).
+     * Default: 100_000 = $0.10
+     */
+    minExecNotionalMicros: z.ZodDefault<z.ZodNumber>;
+    /**
+     * Maximum time a bucket can exist before being flushed (ms).
+     * Default: 2500ms
+     */
+    maxBufferMs: z.ZodDefault<z.ZodNumber>;
+    /**
+     * If no new trades arrive for this duration, flush early (ms).
+     * Only flushes if accumulated >= minExecNotionalMicros.
+     * Default: 600ms
+     */
+    quietFlushMs: z.ZodDefault<z.ZodNumber>;
+    /**
+     * Netting mode: how to handle opposite-side trades in the same bucket.
+     * Default: sameSideOnly
+     */
+    nettingMode: z.ZodDefault<z.ZodEnum<["sameSideOnly", "netBuySell"]>>;
+}, "strip", z.ZodTypeAny, {
+    enabled: boolean;
+    notionalThresholdMicros: number;
+    flushMinNotionalMicros: number;
+    minExecNotionalMicros: number;
+    maxBufferMs: number;
+    quietFlushMs: number;
+    nettingMode: "sameSideOnly" | "netBuySell";
+}, {
+    enabled?: boolean | undefined;
+    notionalThresholdMicros?: number | undefined;
+    flushMinNotionalMicros?: number | undefined;
+    minExecNotionalMicros?: number | undefined;
+    maxBufferMs?: number | undefined;
+    quietFlushMs?: number | undefined;
+    nettingMode?: "sameSideOnly" | "netBuySell" | undefined;
+}>;
+export type SmallTradeBuffering = z.infer<typeof SmallTradeBufferingSchema>;

@@ -5,6 +5,9 @@ import { getQueueDepths } from "../queue/queues.js";
 import { prisma } from "../db/prisma.js";
 import { getAggregateStats } from "../reconcile/index.js";
 import { getBookServiceStats } from "../simulate/bookService.js";
+import { getGlobalConfig } from "../simulate/config.js";
+import { getBufferStats } from "../simulate/smallTradeBuffer.js";
+import type { SmallTradeNettingModeType } from "@copybot/shared";
 
 interface LatencyMetrics {
     p50Ms: number;
@@ -32,12 +35,43 @@ interface ClobBookMetrics {
     freshCount: number;
 }
 
+/**
+ * Small trade buffering config and state for health endpoint.
+ */
+interface SmallTradeBufferingHealth {
+    enabled: boolean;
+    notionalThresholdUsdc: number;
+    flushMinNotionalUsdc: number;
+    minExecNotionalUsdc: number;
+    maxBufferMs: number;
+    quietFlushMs: number;
+    nettingMode: SmallTradeNettingModeType;
+    // Live state
+    activeBucketsCount: number;
+    pendingNotionalTotalUsdc: number;
+    // Metrics (since worker start)
+    metrics: {
+        bufferedTrades: number;
+        immediateTrades: number;
+        flushedBuckets: number;
+        skippedFlushBelowMin: number;
+        flushReasons: {
+            threshold: number;
+            quiet: number;
+            maxTime: number;
+            oppositeSide: number;
+            shutdown: number;
+        };
+    };
+}
+
 interface HealthStatus {
     status: "ok" | "degraded" | "unhealthy";
     timestamp: string;
     lastCanonicalEventTime: string | null;
     alchemyWsConnected: boolean;
     clobBook: ClobBookMetrics;
+    smallTradeBuffering: SmallTradeBufferingHealth;
     queueDepths: Record<string, number>;
     dbConnected: boolean;
     reconcile: ReconcileMetrics;
@@ -91,6 +125,35 @@ async function getHealthStatus(): Promise<HealthStatus> {
         freshCount: bookStats?.freshCount ?? 0,
     };
 
+    // Get small trade buffering config and live stats
+    const globalConfig = await getGlobalConfig();
+    const bufferingConfig = globalConfig.smallTradeBuffering;
+    const bufferStats = await getBufferStats();
+    const smallTradeBuffering: SmallTradeBufferingHealth = {
+        enabled: bufferingConfig.enabled,
+        notionalThresholdUsdc: bufferingConfig.notionalThresholdMicros / 1_000_000,
+        flushMinNotionalUsdc: bufferingConfig.flushMinNotionalMicros / 1_000_000,
+        minExecNotionalUsdc: bufferingConfig.minExecNotionalMicros / 1_000_000,
+        maxBufferMs: bufferingConfig.maxBufferMs,
+        quietFlushMs: bufferingConfig.quietFlushMs,
+        nettingMode: bufferingConfig.nettingMode,
+        activeBucketsCount: bufferStats.activeBucketsCount,
+        pendingNotionalTotalUsdc: Number(bufferStats.pendingNotionalTotalMicros) / 1_000_000,
+        metrics: {
+            bufferedTrades: bufferStats.metrics.bufferedTrades,
+            immediateTrades: bufferStats.metrics.immediateTrades,
+            flushedBuckets: bufferStats.metrics.flushedBuckets,
+            skippedFlushBelowMin: bufferStats.metrics.skippedFlushBelowMin,
+            flushReasons: {
+                threshold: bufferStats.metrics.flushReasonThreshold,
+                quiet: bufferStats.metrics.flushReasonQuiet,
+                maxTime: bufferStats.metrics.flushReasonMaxTime,
+                oppositeSide: bufferStats.metrics.flushReasonOppositeSide,
+                shutdown: bufferStats.metrics.flushReasonShutdown,
+            },
+        },
+    };
+
     // Determine overall status
     let status: "ok" | "degraded" | "unhealthy" = "ok";
     if (!dbConnected) {
@@ -105,6 +168,7 @@ async function getHealthStatus(): Promise<HealthStatus> {
         lastCanonicalEventTime: lastCanonicalEventTime?.toISOString() ?? null,
         alchemyWsConnected,
         clobBook,
+        smallTradeBuffering,
         queueDepths,
         dbConnected,
         reconcile,

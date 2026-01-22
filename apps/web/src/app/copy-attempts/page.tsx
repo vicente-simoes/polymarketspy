@@ -13,6 +13,8 @@ interface CopyAttemptRow {
     followedUser?: { label?: string | null }
     decision: "EXECUTE" | "SKIP"
     reasonCodes: string[]
+    sourceType: "IMMEDIATE" | "BUFFER" | "AGGREGATOR"
+    bufferedTradeCount: number
     targetNotionalMicros: string | number
     filledNotionalMicros: string | number
     filledRatioBps: number
@@ -103,6 +105,35 @@ export default function CopyAttemptsPage() {
         return {
             side,
             windowStartMs: Number.isNaN(windowStartMs) ? null : windowStartMs
+        }
+    }
+
+    const formatSourceType = (
+        sourceType: "IMMEDIATE" | "BUFFER" | "AGGREGATOR",
+        bufferedTradeCount: number
+    ) => {
+        switch (sourceType) {
+            case "IMMEDIATE":
+                return "Immediate"
+            case "BUFFER":
+                return `Buffer (${bufferedTradeCount} trade${bufferedTradeCount !== 1 ? "s" : ""})`
+            case "AGGREGATOR":
+                return "Aggregator"
+            default:
+                return sourceType
+        }
+    }
+
+    const getSourceTypeColor = (sourceType: "IMMEDIATE" | "BUFFER" | "AGGREGATOR") => {
+        switch (sourceType) {
+            case "IMMEDIATE":
+                return "bg-[#1a2b10] text-[#a3e635]"
+            case "BUFFER":
+                return "bg-[#1a1a2b] text-[#a5b4fc]"
+            case "AGGREGATOR":
+                return "bg-[#1A1A1A] text-[#cfcfcf]"
+            default:
+                return "bg-[#1A1A1A] text-[#cfcfcf]"
         }
     }
 
@@ -203,6 +234,7 @@ export default function CopyAttemptsPage() {
                                                 <th className="pb-3 px-3">Time</th>
                                                 <th className="pb-3 px-3">User</th>
                                                 <th className="pb-3 px-3">Decision</th>
+                                                <th className="pb-3 px-3">Source</th>
                                                 <th className="pb-3 px-3">Market</th>
                                                 <th className="pb-3 px-3 text-right">Target</th>
                                                 <th className="pb-3 px-3 text-right">Filled</th>
@@ -260,6 +292,13 @@ export default function CopyAttemptsPage() {
                                                                         }`}
                                                                 >
                                                                     {attempt.decision}
+                                                                </span>
+                                                            </td>
+                                                            <td className="py-4 px-3">
+                                                                <span
+                                                                    className={`rounded-full px-2 py-1 text-xs font-medium ${getSourceTypeColor(attempt.sourceType)}`}
+                                                                >
+                                                                    {formatSourceType(attempt.sourceType, attempt.bufferedTradeCount)}
                                                                 </span>
                                                             </td>
                                                             <td className="py-4 px-3 text-sm text-white">
@@ -320,7 +359,7 @@ export default function CopyAttemptsPage() {
                                                 })
                                             ) : (
                                                 <tr>
-                                                    <td colSpan={9} className="py-8 text-center text-[#6f6f6f]">
+                                                    <td colSpan={10} className="py-8 text-center text-[#6f6f6f]">
                                                         No copy attempts match these filters
                                                     </td>
                                                 </tr>

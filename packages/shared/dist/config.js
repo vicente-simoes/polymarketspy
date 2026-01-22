@@ -70,3 +70,57 @@ export const SystemConfigSchema = z.object({
     /** Initial paper trading bankroll in micros (default: 10000_000_000 = $10,000) */
     initialBankrollMicros: z.number().int().default(10_000_000_000),
 });
+/**
+ * Netting mode for small trade buffering.
+ * - sameSideOnly: Buffer only same-side trades; opposite side flushes current bucket
+ * - netBuySell: Allow buys and sells to net within the same bucket (advanced)
+ */
+export const SmallTradeNettingMode = {
+    SAME_SIDE_ONLY: "sameSideOnly",
+    NET_BUY_SELL: "netBuySell",
+};
+/**
+ * Small trade buffering configuration schema.
+ * When enabled, buffers tiny copy trades and flushes them in batches.
+ * This reduces distortion from per-trade minimums and improves live execution.
+ *
+ * All monetary thresholds are in micros (6 decimal places).
+ */
+export const SmallTradeBufferingSchema = z.object({
+    /** Whether small trade buffering is enabled (default: false) */
+    enabled: z.boolean().default(false),
+    /**
+     * Trades with copy notional below this threshold are considered "small" and buffered.
+     * Default: 250_000 = $0.25
+     */
+    notionalThresholdMicros: z.number().int().min(0).default(250_000),
+    /**
+     * Minimum accumulated notional to trigger a flush.
+     * Default: 500_000 = $0.50
+     */
+    flushMinNotionalMicros: z.number().int().min(0).default(500_000),
+    /**
+     * Hard minimum notional to actually submit an order on flush.
+     * If buffered notional < this on flush, skip (don't submit order).
+     * Default: 100_000 = $0.10
+     */
+    minExecNotionalMicros: z.number().int().min(0).default(100_000),
+    /**
+     * Maximum time a bucket can exist before being flushed (ms).
+     * Default: 2500ms
+     */
+    maxBufferMs: z.number().int().min(100).default(2500),
+    /**
+     * If no new trades arrive for this duration, flush early (ms).
+     * Only flushes if accumulated >= minExecNotionalMicros.
+     * Default: 600ms
+     */
+    quietFlushMs: z.number().int().min(50).default(600),
+    /**
+     * Netting mode: how to handle opposite-side trades in the same bucket.
+     * Default: sameSideOnly
+     */
+    nettingMode: z
+        .enum([SmallTradeNettingMode.SAME_SIDE_ONLY, SmallTradeNettingMode.NET_BUY_SELL])
+        .default(SmallTradeNettingMode.SAME_SIDE_ONLY),
+});

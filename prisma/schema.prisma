@@ -34,6 +34,12 @@ enum CopyDecision {
   SKIP
 }
 
+enum CopySourceType {
+  IMMEDIATE   // Large trade, bypassed buffer (executed directly)
+  BUFFER      // Came from small trade buffer (batched)
+  AGGREGATOR  // Came from 250ms aggregator (buffer disabled)
+}
+
 enum EnrichmentStatus {
   PENDING   // WS-first, minimal data only
   ENRICHED  // Market metadata filled
@@ -207,6 +213,9 @@ model CopyAttempt {
 
   decision                CopyDecision
   reasonCodes             String[]    // non-empty when SKIP
+
+  sourceType              CopySourceType @default(AGGREGATOR)
+  bufferedTradeCount      Int            @default(1)  // meaningful when sourceType=BUFFER
 
   targetNotionalMicros    BigInt
   filledNotionalMicros    BigInt      @default(0)

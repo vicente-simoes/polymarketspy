@@ -33,6 +33,12 @@ export const ReasonCodes = {
     USER_DISABLED: "USER_DISABLED",
     /** Market is blacklisted */
     MARKET_BLACKLISTED: "MARKET_BLACKLISTED",
+
+    // Small trade buffering reason codes
+    /** Trade was buffered (not yet flushed) */
+    BUFFERED: "BUFFERED",
+    /** Buffered notional below min exec threshold on flush */
+    BUFFER_FLUSH_BELOW_MIN_EXEC: "BUFFER_FLUSH_BELOW_MIN_EXEC",
 } as const;
 
 export type ReasonCode = (typeof ReasonCodes)[keyof typeof ReasonCodes];

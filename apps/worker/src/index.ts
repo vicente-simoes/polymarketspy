@@ -5,7 +5,14 @@ import { redisConnection } from "./queue/queues.js";
 import { startPolling, stopPolling } from "./ingest/index.js";
 import { startPortfolioWorkers } from "./portfolio/index.js";
 import { startAlchemySubscription, stopAlchemySubscription, setAlchemyRedisClient } from "./alchemy/index.js";
-import { startGroupEventsWorker, startCopyAttemptWorkers, flushAllGroups } from "./simulate/index.js";
+import {
+    startGroupEventsWorker,
+    startCopyAttemptWorkers,
+    flushAllGroups,
+    startFlushLoop,
+    stopFlushLoopGracefully,
+    setBufferRedisClient,
+} from "./simulate/index.js";
 import { startSnapshotLoops, stopSnapshotLoops } from "./snapshot/index.js";
 import { startReconcileWorker, stopReconcileWorker, flushPendingReconciles } from "./reconcile/index.js";
 import { startEnrichmentProcessor, stopEnrichmentProcessor } from "./enrichment/index.js";
@@ -42,6 +49,9 @@ async function main() {
     // Set up Alchemy rate limit persistence
     setAlchemyRedisClient(redisConnection);
 
+    // Set up small trade buffer Redis client
+    setBufferRedisClient(redisConnection);
+
     // Start health server
     startHealthServer();
 
@@ -56,6 +66,9 @@ async function main() {
 
     // Start copy attempt workers (executable simulation)
     startCopyAttemptWorkers();
+
+    // Start small trade buffer flush loop (checks for due buckets every 100ms)
+    startFlushLoop();
 
     // Start Alchemy WebSocket subscription (non-canonical trigger)
     // Can be disabled via ALCHEMY_WS_ENABLED=false for development
@@ -93,6 +106,7 @@ async function main() {
         stopSnapshotLoops();
         stopSettlementLoop();
         stopEnrichmentProcessor();
+        await stopFlushLoopGracefully(); // Flush any pending small trade buffer buckets
         await flushAllGroups(); // Flush any pending aggregation groups
         await flushPendingReconciles(); // Flush any pending reconcile batches
         await stopReconcileWorker();

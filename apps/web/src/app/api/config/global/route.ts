@@ -4,6 +4,7 @@ import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import prisma from "@/lib/prisma"
 
 const SYSTEM_CONFIG_KEY = "system:config"
+const SMALL_TRADE_BUFFERING_KEY = "config:smallTradeBuffering"
 const DEFAULT_INITIAL_BANKROLL_MICROS = 100_000_000 // $100
 
 export async function POST(request: Request) {
@@ -14,7 +15,7 @@ export async function POST(request: Request) {
 
     try {
         const json = await request.json()
-        const { guardrails, sizing, system } = json
+        const { guardrails, sizing, system, smallTradeBuffering } = json
 
         // Update Global Guardrails
         if (guardrails) {
@@ -86,6 +87,20 @@ export async function POST(request: Request) {
             }
         }
 
+        // Update Small Trade Buffering Config
+        if (smallTradeBuffering && typeof smallTradeBuffering === "object") {
+            await prisma.systemCheckpoint.upsert({
+                where: { key: SMALL_TRADE_BUFFERING_KEY },
+                create: {
+                    key: SMALL_TRADE_BUFFERING_KEY,
+                    valueJson: smallTradeBuffering
+                },
+                update: {
+                    valueJson: smallTradeBuffering
+                }
+            })
+        }
+
         return NextResponse.json({ success: true })
     } catch (error) {
         console.error("Failed to update global config:", error)
@@ -120,12 +135,19 @@ export async function GET() {
                 ? Math.max(0, Math.floor(systemJson.initialBankrollMicros))
                 : DEFAULT_INITIAL_BANKROLL_MICROS
 
+        // Load small trade buffering config
+        const bufferingRow = await prisma.systemCheckpoint.findUnique({
+            where: { key: SMALL_TRADE_BUFFERING_KEY }
+        })
+        const smallTradeBuffering = (bufferingRow?.valueJson || {}) as Record<string, any>
+
         return NextResponse.json({
             guardrails: guardrails?.configJson || {},
             sizing: sizing?.configJson || {},
             system: {
                 initialBankrollMicros
-            }
+            },
+            smallTradeBuffering
         })
     } catch (error) {
         console.error("Failed to fetch global config:", error)

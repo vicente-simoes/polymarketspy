@@ -13,6 +13,7 @@ import {
     AlertTriangle,
     Beaker,
     ClipboardList,
+    Layers,
     Shield,
     Sliders,
     UserCog
@@ -24,6 +25,7 @@ interface GlobalConfigResponse {
     system?: {
         initialBankrollMicros?: number
     }
+    smallTradeBuffering?: Record<string, any>
 }
 
 interface UserConfigResponse {
@@ -66,6 +68,16 @@ type SizingForm = {
     maxTradeBankrollPct: string
 }
 
+type SmallTradeBufferingForm = {
+    enabled: boolean
+    notionalThresholdUsd: string
+    flushMinNotionalUsd: string
+    minExecNotionalUsd: string
+    maxBufferMs: string
+    quietFlushMs: string
+    nettingMode: "sameSideOnly" | "netBuySell"
+}
+
 const guardrailsDefaults = {
     maxWorseningVsTheirFillMicros: 10_000,
     maxOverMidMicros: 15_000,
@@ -91,6 +103,16 @@ const sizingDefaults = {
 
 const systemDefaults = {
     initialBankrollMicros: 100_000_000
+}
+
+const smallTradeBufferingDefaults = {
+    enabled: false,
+    notionalThresholdMicros: 250_000, // $0.25
+    flushMinNotionalMicros: 500_000, // $0.50
+    minExecNotionalMicros: 100_000, // $0.10
+    maxBufferMs: 2500,
+    quietFlushMs: 600,
+    nettingMode: "sameSideOnly" as const
 }
 
 const toFormValue = (
@@ -226,6 +248,41 @@ const sizingToForm = (
     )
 })
 
+const smallTradeBufferingToForm = (config: Record<string, any>): SmallTradeBufferingForm => ({
+    enabled: typeof config.enabled === "boolean" ? config.enabled : smallTradeBufferingDefaults.enabled,
+    notionalThresholdUsd: toFormValue(
+        config.notionalThresholdMicros,
+        smallTradeBufferingDefaults.notionalThresholdMicros,
+        (value) => value / 1_000_000,
+        false
+    ),
+    flushMinNotionalUsd: toFormValue(
+        config.flushMinNotionalMicros,
+        smallTradeBufferingDefaults.flushMinNotionalMicros,
+        (value) => value / 1_000_000,
+        false
+    ),
+    minExecNotionalUsd: toFormValue(
+        config.minExecNotionalMicros,
+        smallTradeBufferingDefaults.minExecNotionalMicros,
+        (value) => value / 1_000_000,
+        false
+    ),
+    maxBufferMs: toFormValue(
+        config.maxBufferMs,
+        smallTradeBufferingDefaults.maxBufferMs,
+        (value) => value,
+        false
+    ),
+    quietFlushMs: toFormValue(
+        config.quietFlushMs,
+        smallTradeBufferingDefaults.quietFlushMs,
+        (value) => value,
+        false
+    ),
+    nettingMode: config.nettingMode === "netBuySell" ? "netBuySell" : "sameSideOnly"
+})
+
 const parseNumber = (value: string, label: string) => {
     const parsed = Number(value)
     if (!Number.isFinite(parsed)) {
@@ -314,6 +371,18 @@ const buildSizingPayload = (form: SizingForm, allowEmpty: boolean) => {
     return payload
 }
 
+const buildSmallTradeBufferingPayload = (form: SmallTradeBufferingForm) => {
+    return {
+        enabled: form.enabled,
+        notionalThresholdMicros: Math.round(parseNumber(form.notionalThresholdUsd, "notionalThresholdUsd") * 1_000_000),
+        flushMinNotionalMicros: Math.round(parseNumber(form.flushMinNotionalUsd, "flushMinNotionalUsd") * 1_000_000),
+        minExecNotionalMicros: Math.round(parseNumber(form.minExecNotionalUsd, "minExecNotionalUsd") * 1_000_000),
+        maxBufferMs: Math.round(parseNumber(form.maxBufferMs, "maxBufferMs")),
+        quietFlushMs: Math.round(parseNumber(form.quietFlushMs, "quietFlushMs")),
+        nettingMode: form.nettingMode
+    }
+}
+
 const formatPercent = (value: number) => `${value.toFixed(1)}%`
 
 const formatBpsPercent = (value: number) => `${(value / 100).toFixed(1)}%`
@@ -398,6 +467,11 @@ export default function ConfigPage() {
     )
     const [depositUsd, setDepositUsd] = useState("")
     const [depositing, setDepositing] = useState(false)
+    const [bufferingForm, setBufferingForm] = useState<SmallTradeBufferingForm>(
+        smallTradeBufferingToForm({})
+    )
+    const [bufferingInitialized, setBufferingInitialized] = useState(false)
+    const [savingBuffering, setSavingBuffering] = useState(false)
 
     useEffect(() => {
         if (!selectedUserId && users?.length) {
@@ -427,6 +501,13 @@ export default function ConfigPage() {
             setSystemInitialized(true)
         }
     }, [globalConfig, systemInitialized])
+
+    useEffect(() => {
+        if (globalConfig && !bufferingInitialized) {
+            setBufferingForm(smallTradeBufferingToForm(globalConfig.smallTradeBuffering || {}))
+            setBufferingInitialized(true)
+        }
+    }, [globalConfig, bufferingInitialized])
 
     useEffect(() => {
         if (userConfig && !userInitialized) {
@@ -616,6 +697,31 @@ export default function ConfigPage() {
             })
         } finally {
             setTestLoading(false)
+        }
+    }
+
+    const handleSaveBuffering = async () => {
+        try {
+            setSavingBuffering(true)
+            const smallTradeBuffering = buildSmallTradeBufferingPayload(bufferingForm)
+            const response = await fetch("/api/config/global", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ smallTradeBuffering })
+            })
+            if (!response.ok) {
+                throw new Error("Failed to save buffering config")
+            }
+            await mutateGlobal()
+            toast({ title: "Saved", description: "Small trade buffering config updated." })
+        } catch (error) {
+            toast({
+                variant: "destructive",
+                title: "Save failed",
+                description: "Check buffering fields for invalid values."
+            })
+        } finally {
+            setSavingBuffering(false)
         }
     }
 
@@ -978,6 +1084,138 @@ export default function ConfigPage() {
                                             }
                                             suffix="%"
                                         />
+                                    </div>
+                                </div>
+
+                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
+                                    <div className="flex items-center justify-between gap-4">
+                                        <div>
+                                            <div className="text-sm text-[#6f6f6f] flex items-center gap-2">
+                                                <Layers className="h-4 w-4 text-[#86efac]" />
+                                                Small Trade Buffering
+                                            </div>
+                                            <div className="text-xs text-[#6f6f6f]">
+                                                Buffer tiny trades and flush in batches.
+                                            </div>
+                                        </div>
+                                        <Button
+                                            onClick={handleSaveBuffering}
+                                            disabled={savingBuffering}
+                                            className="bg-[#86efac] text-black hover:bg-[#4ade80]"
+                                        >
+                                            {savingBuffering ? "Saving..." : "Save Buffering"}
+                                        </Button>
+                                    </div>
+                                    <div className="mt-4">
+                                        <div className="flex items-center gap-3">
+                                            <label className="text-xs uppercase tracking-wider text-[#6f6f6f]">
+                                                Enabled
+                                            </label>
+                                            <button
+                                                type="button"
+                                                onClick={() =>
+                                                    setBufferingForm((prev) => ({
+                                                        ...prev,
+                                                        enabled: !prev.enabled
+                                                    }))
+                                                }
+                                                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                                                    bufferingForm.enabled ? "bg-[#86efac]" : "bg-[#27272A]"
+                                                }`}
+                                            >
+                                                <span
+                                                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                                        bufferingForm.enabled ? "translate-x-6" : "translate-x-1"
+                                                    }`}
+                                                />
+                                            </button>
+                                            <span className="text-xs text-[#6f6f6f]">
+                                                {bufferingForm.enabled ? "ON" : "OFF"}
+                                            </span>
+                                        </div>
+                                    </div>
+                                    <div className="mt-4 grid grid-cols-1 gap-4">
+                                        <Field
+                                            label="Small Trade Threshold"
+                                            value={bufferingForm.notionalThresholdUsd}
+                                            onChange={(value) =>
+                                                setBufferingForm((prev) => ({
+                                                    ...prev,
+                                                    notionalThresholdUsd: value
+                                                }))
+                                            }
+                                            suffix="USDC"
+                                            helper="Trades below this are buffered (default $0.25)"
+                                        />
+                                        <Field
+                                            label="Flush Min Notional"
+                                            value={bufferingForm.flushMinNotionalUsd}
+                                            onChange={(value) =>
+                                                setBufferingForm((prev) => ({
+                                                    ...prev,
+                                                    flushMinNotionalUsd: value
+                                                }))
+                                            }
+                                            suffix="USDC"
+                                            helper="Min accumulated to trigger flush (default $0.50)"
+                                        />
+                                        <Field
+                                            label="Min Exec Notional"
+                                            value={bufferingForm.minExecNotionalUsd}
+                                            onChange={(value) =>
+                                                setBufferingForm((prev) => ({
+                                                    ...prev,
+                                                    minExecNotionalUsd: value
+                                                }))
+                                            }
+                                            suffix="USDC"
+                                            helper="Skip if below this on flush (default $0.10)"
+                                        />
+                                        <Field
+                                            label="Max Buffer Time"
+                                            value={bufferingForm.maxBufferMs}
+                                            onChange={(value) =>
+                                                setBufferingForm((prev) => ({
+                                                    ...prev,
+                                                    maxBufferMs: value
+                                                }))
+                                            }
+                                            suffix="ms"
+                                            helper="Hard deadline to flush bucket (default 2500ms)"
+                                        />
+                                        <Field
+                                            label="Quiet Flush Time"
+                                            value={bufferingForm.quietFlushMs}
+                                            onChange={(value) =>
+                                                setBufferingForm((prev) => ({
+                                                    ...prev,
+                                                    quietFlushMs: value
+                                                }))
+                                            }
+                                            suffix="ms"
+                                            helper="Flush if no activity for this long (default 600ms)"
+                                        />
+                                        <div className="flex flex-col gap-2">
+                                            <label className="text-xs uppercase tracking-wider text-[#6f6f6f]">
+                                                Netting Mode
+                                            </label>
+                                            <select
+                                                value={bufferingForm.nettingMode}
+                                                onChange={(event) =>
+                                                    setBufferingForm((prev) => ({
+                                                        ...prev,
+                                                        nettingMode: event.target.value as "sameSideOnly" | "netBuySell"
+                                                    }))
+                                                }
+                                                className="h-10 rounded-lg border border-[#27272A] bg-[#111111] px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-[#86efac]"
+                                            >
+                                                <option value="sameSideOnly">Same Side Only</option>
+                                                <option value="netBuySell">Net Buy/Sell</option>
+                                            </select>
+                                            <span className="text-xs text-[#6f6f6f]">
+                                                Same Side Only recommended (simpler, safer)
+                                            </span>
+                                        </div>
                                     </div>
                                 </div>
 

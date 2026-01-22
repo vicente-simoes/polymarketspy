@@ -8,7 +8,15 @@
 import { ConfigScope } from "@prisma/client";
 import { prisma } from "../db/prisma.js";
 import { createChildLogger } from "../log/logger.js";
-import { GuardrailsSchema, SizingSchema, type Guardrails, type Sizing } from "@copybot/shared";
+import {
+    GuardrailsSchema,
+    SizingSchema,
+    SmallTradeBufferingSchema,
+    SmallTradeNettingMode,
+    type Guardrails,
+    type Sizing,
+    type SmallTradeBuffering,
+} from "@copybot/shared";
 
 const logger = createChildLogger({ module: "simulation-config" });
 
@@ -51,17 +59,33 @@ export const DEFAULT_SIZING: Sizing = {
 };
 
 /**
+ * Default small trade buffering config.
+ * Disabled by default - no behavior change unless enabled.
+ */
+export const DEFAULT_SMALL_TRADE_BUFFERING: SmallTradeBuffering = {
+    enabled: false,
+    notionalThresholdMicros: 250_000, // $0.25
+    flushMinNotionalMicros: 500_000, // $0.50
+    minExecNotionalMicros: 100_000, // $0.10
+    maxBufferMs: 2500,
+    quietFlushMs: 600,
+    nettingMode: SmallTradeNettingMode.SAME_SIDE_ONLY,
+};
+
+/**
  * Cache for effective configs (refreshed on demand).
  */
 interface ConfigCache {
     global: {
         guardrails: Guardrails;
         sizing: Sizing;
+        smallTradeBuffering: SmallTradeBuffering;
         loadedAt: Date;
     } | null;
     perUser: Map<string, {
         guardrails: Guardrails;
         sizing: Sizing;
+        smallTradeBuffering: SmallTradeBuffering;
         loadedAt: Date;
     }>;
 }
@@ -84,7 +108,11 @@ function isCacheValid(loadedAt: Date): boolean {
 /**
  * Load global config from database.
  */
-async function loadGlobalConfig(): Promise<{ guardrails: Guardrails; sizing: Sizing }> {
+async function loadGlobalConfig(): Promise<{
+    guardrails: Guardrails;
+    sizing: Sizing;
+    smallTradeBuffering: SmallTradeBuffering;
+}> {
     // Load guardrails
     const guardrailRow = await prisma.guardrailConfig.findFirst({
         where: { scope: ConfigScope.GLOBAL, followedUserId: null },
@@ -117,17 +145,34 @@ async function loadGlobalConfig(): Promise<{ guardrails: Guardrails; sizing: Siz
         }
     }
 
-    return { guardrails, sizing };
+    // Load small trade buffering config from SystemCheckpoint
+    const bufferingRow = await prisma.systemCheckpoint.findUnique({
+        where: { key: "config:smallTradeBuffering" },
+    });
+
+    let smallTradeBuffering = DEFAULT_SMALL_TRADE_BUFFERING;
+    if (bufferingRow) {
+        try {
+            const parsed = SmallTradeBufferingSchema.partial().parse(bufferingRow.valueJson);
+            smallTradeBuffering = { ...DEFAULT_SMALL_TRADE_BUFFERING, ...parsed };
+        } catch (err) {
+            logger.warn({ err }, "Failed to parse small trade buffering config, using defaults");
+        }
+    }
+
+    return { guardrails, sizing, smallTradeBuffering };
 }
 
 /**
  * Load per-user config overrides from database.
+ * Note: smallTradeBuffering is global-only for now, but structure supports per-user in future.
  */
 async function loadUserConfig(
     followedUserId: string,
     globalGuardrails: Guardrails,
-    globalSizing: Sizing
-): Promise<{ guardrails: Guardrails; sizing: Sizing }> {
+    globalSizing: Sizing,
+    globalSmallTradeBuffering: SmallTradeBuffering
+): Promise<{ guardrails: Guardrails; sizing: Sizing; smallTradeBuffering: SmallTradeBuffering }> {
     // Load user-specific guardrails
     const guardrailRow = await prisma.guardrailConfig.findFirst({
         where: {
@@ -166,16 +211,28 @@ async function loadUserConfig(
         }
     }
 
-    return { guardrails, sizing };
+    // For now, small trade buffering is global-only (no per-user overrides)
+    // Future: could load from a per-user SystemCheckpoint or new table
+    const smallTradeBuffering = globalSmallTradeBuffering;
+
+    return { guardrails, sizing, smallTradeBuffering };
 }
 
 /**
- * Get effective guardrails and sizing for global portfolio.
+ * Get effective guardrails, sizing, and small trade buffering for global portfolio.
  */
-export async function getGlobalConfig(): Promise<{ guardrails: Guardrails; sizing: Sizing }> {
+export async function getGlobalConfig(): Promise<{
+    guardrails: Guardrails;
+    sizing: Sizing;
+    smallTradeBuffering: SmallTradeBuffering;
+}> {
     // Check cache
     if (cache.global && isCacheValid(cache.global.loadedAt)) {
-        return { guardrails: cache.global.guardrails, sizing: cache.global.sizing };
+        return {
+            guardrails: cache.global.guardrails,
+            sizing: cache.global.sizing,
+            smallTradeBuffering: cache.global.smallTradeBuffering,
+        };
     }
 
     // Load from DB
@@ -185,6 +242,7 @@ export async function getGlobalConfig(): Promise<{ guardrails: Guardrails; sizin
     cache.global = {
         guardrails: config.guardrails,
         sizing: config.sizing,
+        smallTradeBuffering: config.smallTradeBuffering,
         loadedAt: new Date(),
     };
 
@@ -192,28 +250,38 @@ export async function getGlobalConfig(): Promise<{ guardrails: Guardrails; sizin
 }
 
 /**
- * Get effective guardrails and sizing for a specific user.
+ * Get effective guardrails, sizing, and small trade buffering for a specific user.
  * Merges global config with user-specific overrides.
  */
 export async function getUserConfig(
     followedUserId: string
-): Promise<{ guardrails: Guardrails; sizing: Sizing }> {
+): Promise<{ guardrails: Guardrails; sizing: Sizing; smallTradeBuffering: SmallTradeBuffering }> {
     // Check cache
     const cached = cache.perUser.get(followedUserId);
     if (cached && isCacheValid(cached.loadedAt)) {
-        return { guardrails: cached.guardrails, sizing: cached.sizing };
+        return {
+            guardrails: cached.guardrails,
+            sizing: cached.sizing,
+            smallTradeBuffering: cached.smallTradeBuffering,
+        };
     }
 
     // Load global config first
     const global = await getGlobalConfig();
 
     // Load user overrides
-    const config = await loadUserConfig(followedUserId, global.guardrails, global.sizing);
+    const config = await loadUserConfig(
+        followedUserId,
+        global.guardrails,
+        global.sizing,
+        global.smallTradeBuffering
+    );
 
     // Update cache
     cache.perUser.set(followedUserId, {
         guardrails: config.guardrails,
         sizing: config.sizing,
+        smallTradeBuffering: config.smallTradeBuffering,
         loadedAt: new Date(),
     });
 
