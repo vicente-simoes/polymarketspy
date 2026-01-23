@@ -3,6 +3,8 @@ import { getServerSession } from "next-auth"
 import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import prisma from "@/lib/prisma"
 
+export const dynamic = "force-dynamic"
+
 export async function POST(
     request: Request,
     { params }: { params: Promise<{ id: string }> }
@@ -61,7 +63,10 @@ export async function POST(
             }
         }
 
-        return NextResponse.json({ success: true })
+        return NextResponse.json(
+            { success: true },
+            { headers: { "Cache-Control": "no-store" } }
+        )
     } catch (error) {
         console.error("Failed to update user config:", error)
         return NextResponse.json({ error: "Internal Server Error" }, { status: 500 })
@@ -89,10 +94,13 @@ export async function GET(
             orderBy: { updatedAt: "desc" }
         })
 
-        return NextResponse.json({
-            guardrails: guardrails?.configJson || {},
-            sizing: sizing?.configJson || {}
-        })
+        return NextResponse.json(
+            {
+                guardrails: guardrails?.configJson || {},
+                sizing: sizing?.configJson || {}
+            },
+            { headers: { "Cache-Control": "no-store" } }
+        )
     } catch (error) {
         console.error("Failed to fetch user config:", error)
         return NextResponse.json({ error: "Internal Server Error" }, { status: 500 })

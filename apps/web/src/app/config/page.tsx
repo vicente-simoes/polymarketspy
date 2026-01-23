@@ -16,6 +16,7 @@ import {
     Layers,
     Shield,
     Sliders,
+    TrendingUp,
     UserCog
 } from "lucide-react"
 
@@ -68,6 +69,16 @@ type SizingForm = {
     maxTradeBankrollPct: string
 }
 
+type BudgetedDynamicForm = {
+    budgetedDynamicEnabled: boolean
+    sizingMode: "" | "fixedRate" | "budgetedDynamic"
+    budgetUsd: string
+    budgetRMinPct: string
+    budgetRMaxPct: string
+    budgetEnforcement: "" | "hard" | "soft"
+    minLeaderTradeNotionalUsd: string
+}
+
 type SmallTradeBufferingForm = {
     enabled: boolean
     notionalThresholdUsd: string
@@ -101,6 +112,16 @@ const sizingDefaults = {
     maxTradeBankrollBps: 75
 }
 
+const budgetedDynamicDefaults = {
+    budgetedDynamicEnabled: false,
+    sizingMode: "fixedRate" as const,
+    budgetUsdcMicros: 0,
+    budgetRMinBps: 0,
+    budgetRMaxBps: 100, // 1.00%
+    budgetEnforcement: "hard" as const,
+    minLeaderTradeNotionalMicros: 0
+}
+
 const systemDefaults = {
     initialBankrollMicros: 100_000_000
 }
@@ -114,6 +135,8 @@ const smallTradeBufferingDefaults = {
     quietFlushMs: 600,
     nettingMode: "sameSideOnly" as const
 }
+
+const SELECTED_USER_ID_STORAGE_KEY = "config:selectedUserId"
 
 const toFormValue = (
     value: number | undefined,
@@ -283,6 +306,54 @@ const smallTradeBufferingToForm = (config: Record<string, any>): SmallTradeBuffe
     nettingMode: config.nettingMode === "netBuySell" ? "netBuySell" : "sameSideOnly"
 })
 
+const budgetedDynamicToForm = (
+    config: Record<string, any>,
+    allowEmpty: boolean
+): BudgetedDynamicForm => ({
+    budgetedDynamicEnabled:
+        typeof config.budgetedDynamicEnabled === "boolean"
+            ? config.budgetedDynamicEnabled
+            : budgetedDynamicDefaults.budgetedDynamicEnabled,
+    sizingMode: allowEmpty
+        ? (config.sizingMode === "fixedRate" || config.sizingMode === "budgetedDynamic"
+            ? config.sizingMode
+            : "")
+        : (config.sizingMode === "budgetedDynamic"
+            ? "budgetedDynamic"
+            : "fixedRate"),
+    budgetUsd: toFormValue(
+        config.budgetUsdcMicros,
+        budgetedDynamicDefaults.budgetUsdcMicros,
+        (value) => value / 1_000_000,
+        allowEmpty
+    ),
+    budgetRMinPct: toFormValue(
+        config.budgetRMinBps,
+        budgetedDynamicDefaults.budgetRMinBps,
+        (value) => value / 100,
+        allowEmpty
+    ),
+    budgetRMaxPct: toFormValue(
+        config.budgetRMaxBps,
+        budgetedDynamicDefaults.budgetRMaxBps,
+        (value) => value / 100,
+        allowEmpty
+    ),
+    budgetEnforcement: allowEmpty
+        ? (config.budgetEnforcement === "hard" || config.budgetEnforcement === "soft"
+            ? config.budgetEnforcement
+            : "")
+        : (config.budgetEnforcement === "soft"
+            ? "soft"
+            : "hard"),
+    minLeaderTradeNotionalUsd: toFormValue(
+        config.minLeaderTradeNotionalMicros,
+        budgetedDynamicDefaults.minLeaderTradeNotionalMicros,
+        (value) => value / 1_000_000,
+        allowEmpty
+    )
+})
+
 const parseNumber = (value: string, label: string) => {
     const parsed = Number(value)
     if (!Number.isFinite(parsed)) {
@@ -383,6 +454,60 @@ const buildSmallTradeBufferingPayload = (form: SmallTradeBufferingForm) => {
     }
 }
 
+const buildBudgetedDynamicPayload = (form: BudgetedDynamicForm, allowEmpty: boolean) => {
+    const payload: Record<string, any> = {}
+
+    // budgetedDynamicEnabled is always included for global (it's a required field)
+    if (!allowEmpty) {
+        payload.budgetedDynamicEnabled = form.budgetedDynamicEnabled
+    }
+
+    // sizingMode
+    if (form.sizingMode !== "") {
+        payload.sizingMode = form.sizingMode
+    }
+
+    // budgetUsd -> budgetUsdcMicros
+    if (form.budgetUsd.trim() !== "") {
+        const parsed = parseNumber(form.budgetUsd, "budgetUsd")
+        payload.budgetUsdcMicros = Math.round(parsed * 1_000_000)
+    }
+
+    // budgetRMinPct -> budgetRMinBps
+    if (form.budgetRMinPct.trim() !== "") {
+        const parsed = parseNumber(form.budgetRMinPct, "budgetRMinPct")
+        payload.budgetRMinBps = Math.round(parsed * 100)
+    }
+
+    // budgetRMaxPct -> budgetRMaxBps
+    if (form.budgetRMaxPct.trim() !== "") {
+        const parsed = parseNumber(form.budgetRMaxPct, "budgetRMaxPct")
+        payload.budgetRMaxBps = Math.round(parsed * 100)
+    }
+
+    // budgetEnforcement
+    if (form.budgetEnforcement !== "") {
+        payload.budgetEnforcement = form.budgetEnforcement
+    }
+
+    // minLeaderTradeNotionalUsd -> minLeaderTradeNotionalMicros
+    if (form.minLeaderTradeNotionalUsd.trim() !== "") {
+        const parsed = parseNumber(form.minLeaderTradeNotionalUsd, "minLeaderTradeNotionalUsd")
+        payload.minLeaderTradeNotionalMicros = Math.round(parsed * 1_000_000)
+    }
+
+    return payload
+}
+
+const buildMergedGlobalSizingPayload = (
+    baseForm: SizingForm,
+    budgetedDynamicForm: BudgetedDynamicForm
+) => {
+    const baseSizing = buildSizingPayload(baseForm, false)
+    const budgetedDynamicSizing = buildBudgetedDynamicPayload(budgetedDynamicForm, false)
+    return { ...baseSizing, ...budgetedDynamicSizing }
+}
+
 const formatPercent = (value: number) => `${value.toFixed(1)}%`
 
 const formatBpsPercent = (value: number) => `${(value / 100).toFixed(1)}%`
@@ -456,7 +581,7 @@ export default function ConfigPage() {
     const [userSizingForm, setUserSizingForm] = useState<SizingForm>(sizingToForm({}, true))
     const [globalInitialized, setGlobalInitialized] = useState(false)
     const [systemInitialized, setSystemInitialized] = useState(false)
-    const [userInitialized, setUserInitialized] = useState(false)
+    const [userDirty, setUserDirty] = useState(false)
     const [savingGlobal, setSavingGlobal] = useState(false)
     const [savingSystem, setSavingSystem] = useState(false)
     const [savingUser, setSavingUser] = useState(false)
@@ -472,15 +597,58 @@ export default function ConfigPage() {
     )
     const [bufferingInitialized, setBufferingInitialized] = useState(false)
     const [savingBuffering, setSavingBuffering] = useState(false)
+    const [globalBudgetedDynamicForm, setGlobalBudgetedDynamicForm] = useState<BudgetedDynamicForm>(
+        budgetedDynamicToForm({}, false)
+    )
+    const [userBudgetedDynamicForm, setUserBudgetedDynamicForm] = useState<BudgetedDynamicForm>(
+        budgetedDynamicToForm({}, true)
+    )
+    const [budgetedDynamicInitialized, setBudgetedDynamicInitialized] = useState(false)
+    const [savingBudgetedDynamic, setSavingBudgetedDynamic] = useState(false)
 
     useEffect(() => {
-        if (!selectedUserId && users?.length) {
-            setSelectedUserId(users[0].id)
+        try {
+            const stored = window.localStorage.getItem(SELECTED_USER_ID_STORAGE_KEY)
+            if (stored) {
+                setSelectedUserId(stored)
+            }
+        } catch {
+            // ignore localStorage issues (private mode, etc.)
         }
+    }, [])
+
+    useEffect(() => {
+        if (!users?.length) return
+        if (selectedUserId && users.some((user) => user.id === selectedUserId)) return
+        setSelectedUserId(users[0].id)
     }, [users, selectedUserId])
+
+    useEffect(() => {
+        if (!selectedUserId) return
+        try {
+            window.localStorage.setItem(SELECTED_USER_ID_STORAGE_KEY, selectedUserId)
+        } catch {
+            // ignore localStorage issues (private mode, etc.)
+        }
+    }, [selectedUserId])
 
     const userConfigKey = selectedUserId ? `/api/config/user/${selectedUserId}` : null
     const { data: userConfig } = useSWR<UserConfigResponse>(userConfigKey, fetcher)
+
+    useEffect(() => {
+        if (!selectedUserId) return
+        setUserDirty(false)
+        setUserGuardrailsForm(guardrailsToForm({}, true))
+        setUserSizingForm(sizingToForm({}, true))
+        setUserBudgetedDynamicForm(budgetedDynamicToForm({}, true))
+    }, [selectedUserId])
+
+    useEffect(() => {
+        if (!userConfig || userDirty) return
+        setUserGuardrailsForm(guardrailsToForm(userConfig.guardrails || {}, true))
+        setUserSizingForm(sizingToForm(userConfig.sizing || {}, true))
+        setUserBudgetedDynamicForm(budgetedDynamicToForm(userConfig.sizing || {}, true))
+    }, [userConfig, userDirty])
 
     useEffect(() => {
         if (globalConfig && !globalInitialized) {
@@ -510,20 +678,13 @@ export default function ConfigPage() {
     }, [globalConfig, bufferingInitialized])
 
     useEffect(() => {
-        if (userConfig && !userInitialized) {
-            setUserGuardrailsForm(guardrailsToForm(userConfig.guardrails || {}, true))
-            setUserSizingForm(sizingToForm(userConfig.sizing || {}, true))
-            setUserInitialized(true)
+        if (globalConfig && !budgetedDynamicInitialized) {
+            setGlobalBudgetedDynamicForm(budgetedDynamicToForm(globalConfig.sizing || {}, false))
+            setBudgetedDynamicInitialized(true)
         }
-    }, [userConfig, userInitialized])
+    }, [globalConfig, budgetedDynamicInitialized])
 
-    useEffect(() => {
-        if (selectedUserId) {
-            setUserInitialized(false)
-            setUserGuardrailsForm(guardrailsToForm({}, true))
-            setUserSizingForm(sizingToForm({}, true))
-        }
-    }, [selectedUserId])
+    // user form initialization handled by userDirty + userConfig effects above
 
     const resolvedGuardrails = useMemo(() => {
         try {
@@ -564,7 +725,7 @@ export default function ConfigPage() {
     const handleSaveGlobalSizing = async () => {
         try {
             setSavingGlobal(true)
-            const sizing = buildSizingPayload(globalSizingForm, false)
+            const sizing = buildMergedGlobalSizingPayload(globalSizingForm, globalBudgetedDynamicForm)
             const response = await fetch("/api/config/global", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -652,7 +813,10 @@ export default function ConfigPage() {
         try {
             setSavingUser(true)
             const guardrails = buildGuardrailsPayload(userGuardrailsForm, true)
-            const sizing = buildSizingPayload(userSizingForm, true)
+            const baseSizing = buildSizingPayload(userSizingForm, true)
+            const budgetedDynamicSizing = buildBudgetedDynamicPayload(userBudgetedDynamicForm, true)
+            // Merge both sizing payloads (budgeted dynamic fields go into sizing config)
+            const sizing = { ...baseSizing, ...budgetedDynamicSizing }
             const response = await fetch(`/api/config/user/${selectedUserId}`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -662,7 +826,13 @@ export default function ConfigPage() {
                 throw new Error("Failed to save user overrides")
             }
             if (userConfigKey) {
-                await mutate(userConfigKey)
+                setUserDirty(false)
+                try {
+                    const refreshed = (await fetcher(userConfigKey)) as UserConfigResponse
+                    mutate(userConfigKey, refreshed, false)
+                } catch {
+                    mutate(userConfigKey)
+                }
             }
             toast({ title: "Saved", description: "User overrides updated." })
         } catch (error) {
@@ -722,6 +892,50 @@ export default function ConfigPage() {
             })
         } finally {
             setSavingBuffering(false)
+        }
+    }
+
+    const handleSaveBudgetedDynamic = async () => {
+        try {
+            setSavingBudgetedDynamic(true)
+
+            // Validate: if enabled and budgetedDynamic mode, budget must be > 0
+            if (
+                globalBudgetedDynamicForm.budgetedDynamicEnabled &&
+                globalBudgetedDynamicForm.sizingMode === "budgetedDynamic"
+            ) {
+                const budgetVal = parseFloat(globalBudgetedDynamicForm.budgetUsd || "0")
+                if (!Number.isFinite(budgetVal) || budgetVal <= 0) {
+                    throw new Error("Budget must be > 0 when budgeted dynamic is enabled")
+                }
+            }
+
+            // Validate: rMin <= rMax
+            const rMinVal = parseFloat(globalBudgetedDynamicForm.budgetRMinPct || "0")
+            const rMaxVal = parseFloat(globalBudgetedDynamicForm.budgetRMaxPct || "0")
+            if (Number.isFinite(rMinVal) && Number.isFinite(rMaxVal) && rMinVal > rMaxVal) {
+                throw new Error("r_min must be <= r_max")
+            }
+
+            const budgetedDynamicPayload = buildMergedGlobalSizingPayload(globalSizingForm, globalBudgetedDynamicForm)
+            const response = await fetch("/api/config/global", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ sizing: budgetedDynamicPayload })
+            })
+            if (!response.ok) {
+                throw new Error("Failed to save budgeted dynamic config")
+            }
+            await mutateGlobal()
+            toast({ title: "Saved", description: "Budgeted dynamic sizing config updated." })
+        } catch (error: any) {
+            toast({
+                variant: "destructive",
+                title: "Save failed",
+                description: error?.message || "Check budgeted dynamic fields for invalid values."
+            })
+        } finally {
+            setSavingBudgetedDynamic(false)
         }
     }
 
@@ -1091,6 +1305,147 @@ export default function ConfigPage() {
                                     <div className="flex items-center justify-between gap-4">
                                         <div>
                                             <div className="text-sm text-[#6f6f6f] flex items-center gap-2">
+                                                <TrendingUp className="h-4 w-4 text-[#86efac]" />
+                                                Budgeted Dynamic Sizing
+                                            </div>
+                                            <div className="text-xs text-[#6f6f6f]">
+                                                Allocate per-leader budgets for dynamic copy rates.
+                                            </div>
+                                        </div>
+                                        <Button
+                                            onClick={handleSaveBudgetedDynamic}
+                                            disabled={savingBudgetedDynamic}
+                                            className="bg-[#86efac] text-black hover:bg-[#4ade80]"
+                                        >
+                                            {savingBudgetedDynamic ? "Saving..." : "Save Dynamic"}
+                                        </Button>
+                                    </div>
+                                    <div className="mt-4">
+                                        <div className="flex items-center gap-3">
+                                            <label className="text-xs uppercase tracking-wider text-[#6f6f6f]">
+                                                Enabled (Kill Switch)
+                                            </label>
+                                            <button
+                                                type="button"
+                                                onClick={() =>
+                                                    setGlobalBudgetedDynamicForm((prev) => ({
+                                                        ...prev,
+                                                        budgetedDynamicEnabled: !prev.budgetedDynamicEnabled
+                                                    }))
+                                                }
+                                                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                                                    globalBudgetedDynamicForm.budgetedDynamicEnabled ? "bg-[#86efac]" : "bg-[#27272A]"
+                                                }`}
+                                            >
+                                                <span
+                                                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                                        globalBudgetedDynamicForm.budgetedDynamicEnabled ? "translate-x-6" : "translate-x-1"
+                                                    }`}
+                                                />
+                                            </button>
+                                            <span className="text-xs text-[#6f6f6f]">
+                                                {globalBudgetedDynamicForm.budgetedDynamicEnabled ? "ON" : "OFF"}
+                                            </span>
+                                        </div>
+                                    </div>
+                                    <div className="mt-4 grid grid-cols-1 gap-4">
+                                        <div className="flex flex-col gap-2">
+                                            <label className="text-xs uppercase tracking-wider text-[#6f6f6f]">
+                                                Sizing Mode
+                                            </label>
+                                            <select
+                                                value={globalBudgetedDynamicForm.sizingMode}
+                                                onChange={(event) =>
+                                                    setGlobalBudgetedDynamicForm((prev) => ({
+                                                        ...prev,
+                                                        sizingMode: event.target.value as "fixedRate" | "budgetedDynamic"
+                                                    }))
+                                                }
+                                                className="h-10 rounded-lg border border-[#27272A] bg-[#111111] px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-[#86efac]"
+                                            >
+                                                <option value="fixedRate">Fixed Rate (current behavior)</option>
+                                                <option value="budgetedDynamic">Budgeted Dynamic</option>
+                                            </select>
+                                            <span className="text-xs text-[#6f6f6f]">
+                                                Fixed Rate uses copy %, Budgeted Dynamic uses budget / leader exposure
+                                            </span>
+                                        </div>
+                                        <Field
+                                            label="Budget per Leader"
+                                            value={globalBudgetedDynamicForm.budgetUsd}
+                                            onChange={(value) =>
+                                                setGlobalBudgetedDynamicForm((prev) => ({
+                                                    ...prev,
+                                                    budgetUsd: value
+                                                }))
+                                            }
+                                            suffix="USDC"
+                                            helper="Your allocation for this leader (e.g. $40)"
+                                        />
+                                        <Field
+                                            label="r_min (Rate Floor)"
+                                            value={globalBudgetedDynamicForm.budgetRMinPct}
+                                            onChange={(value) =>
+                                                setGlobalBudgetedDynamicForm((prev) => ({
+                                                    ...prev,
+                                                    budgetRMinPct: value
+                                                }))
+                                            }
+                                            suffix="%"
+                                            helper="Minimum effective copy rate (default 0%)"
+                                        />
+                                        <Field
+                                            label="r_max (Rate Ceiling)"
+                                            value={globalBudgetedDynamicForm.budgetRMaxPct}
+                                            onChange={(value) =>
+                                                setGlobalBudgetedDynamicForm((prev) => ({
+                                                    ...prev,
+                                                    budgetRMaxPct: value
+                                                }))
+                                            }
+                                            suffix="%"
+                                            helper="Maximum effective copy rate (default 1%)"
+                                        />
+                                        <div className="flex flex-col gap-2">
+                                            <label className="text-xs uppercase tracking-wider text-[#6f6f6f]">
+                                                Budget Enforcement
+                                            </label>
+                                            <select
+                                                value={globalBudgetedDynamicForm.budgetEnforcement}
+                                                onChange={(event) =>
+                                                    setGlobalBudgetedDynamicForm((prev) => ({
+                                                        ...prev,
+                                                        budgetEnforcement: event.target.value as "hard" | "soft"
+                                                    }))
+                                                }
+                                                className="h-10 rounded-lg border border-[#27272A] bg-[#111111] px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-[#86efac]"
+                                            >
+                                                <option value="hard">Hard (caps exposure at budget)</option>
+                                                <option value="soft">Soft (influences rate only)</option>
+                                            </select>
+                                            <span className="text-xs text-[#6f6f6f]">
+                                                Hard enforcement will skip/reduce trades that exceed budget
+                                            </span>
+                                        </div>
+                                        <Field
+                                            label="Min Leader Trade"
+                                            value={globalBudgetedDynamicForm.minLeaderTradeNotionalUsd}
+                                            onChange={(value) =>
+                                                setGlobalBudgetedDynamicForm((prev) => ({
+                                                    ...prev,
+                                                    minLeaderTradeNotionalUsd: value
+                                                }))
+                                            }
+                                            suffix="USDC"
+                                            helper="Skip leader trades below this size (0 = disabled)"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
+                                    <div className="flex items-center justify-between gap-4">
+                                        <div>
+                                            <div className="text-sm text-[#6f6f6f] flex items-center gap-2">
                                                 <Layers className="h-4 w-4 text-[#86efac]" />
                                                 Small Trade Buffering
                                             </div>
@@ -1302,156 +1657,169 @@ export default function ConfigPage() {
                                             <Field
                                                 label="Max Worsening vs Their Fill"
                                                 value={userGuardrailsForm.maxWorseningVsTheirFillCents}
-                                                onChange={(value) =>
+                                                onChange={(value) => {
+                                                    setUserDirty(true)
                                                     setUserGuardrailsForm((prev) => ({
                                                         ...prev,
                                                         maxWorseningVsTheirFillCents: value
                                                     }))
-                                                }
+                                                }}
                                                 suffix="cents"
                                                 placeholder="inherit"
                                             />
                                             <Field
                                                 label="Max Over Mid"
                                                 value={userGuardrailsForm.maxOverMidCents}
-                                                onChange={(value) =>
+                                                onChange={(value) => {
+                                                    setUserDirty(true)
                                                     setUserGuardrailsForm((prev) => ({
                                                         ...prev,
                                                         maxOverMidCents: value
                                                     }))
-                                                }
+                                                }}
                                                 suffix="cents"
                                                 placeholder="inherit"
                                             />
                                             <Field
                                                 label="Max Spread"
                                                 value={userGuardrailsForm.maxSpreadCents}
-                                                onChange={(value) =>
+                                                onChange={(value) => {
+                                                    setUserDirty(true)
                                                     setUserGuardrailsForm((prev) => ({
                                                         ...prev,
                                                         maxSpreadCents: value
                                                     }))
-                                                }
+                                                }}
                                                 suffix="cents"
                                                 placeholder="inherit"
                                             />
                                             <Field
                                                 label="Depth Multiplier"
                                                 value={userGuardrailsForm.minDepthMultiplier}
-                                                onChange={(value) =>
+                                                onChange={(value) => {
+                                                    setUserDirty(true)
                                                     setUserGuardrailsForm((prev) => ({
                                                         ...prev,
                                                         minDepthMultiplier: value
                                                     }))
-                                                }
+                                                }}
                                                 suffix="x"
                                                 placeholder="inherit"
                                             />
                                             <Field
                                                 label="No New Opens Within"
                                                 value={userGuardrailsForm.noNewOpensMinutes}
-                                                onChange={(value) =>
+                                                onChange={(value) => {
+                                                    setUserDirty(true)
                                                     setUserGuardrailsForm((prev) => ({
                                                         ...prev,
                                                         noNewOpensMinutes: value
                                                     }))
-                                                }
+                                                }}
                                                 suffix="min"
                                                 placeholder="inherit"
                                             />
                                             <Field
                                                 label="Decision Latency"
                                                 value={userGuardrailsForm.decisionLatencyMs}
-                                                onChange={(value) =>
+                                                onChange={(value) => {
+                                                    setUserDirty(true)
                                                     setUserGuardrailsForm((prev) => ({
                                                         ...prev,
                                                         decisionLatencyMs: value
                                                     }))
-                                                }
+                                                }}
                                                 suffix="ms"
                                                 placeholder="inherit"
                                             />
                                             <Field
                                                 label="Jitter Max"
                                                 value={userGuardrailsForm.jitterMsMax}
-                                                onChange={(value) =>
+                                                onChange={(value) => {
+                                                    setUserDirty(true)
                                                     setUserGuardrailsForm((prev) => ({
                                                         ...prev,
                                                         jitterMsMax: value
                                                     }))
-                                                }
+                                                }}
                                                 suffix="ms"
                                                 placeholder="inherit"
                                             />
                                             <Field
                                                 label="Max Total Exposure"
                                                 value={userGuardrailsForm.maxTotalExposurePct}
-                                                onChange={(value) =>
+                                                onChange={(value) => {
+                                                    setUserDirty(true)
                                                     setUserGuardrailsForm((prev) => ({
                                                         ...prev,
                                                         maxTotalExposurePct: value
                                                     }))
-                                                }
+                                                }}
                                                 suffix="%"
                                                 placeholder="inherit"
                                             />
                                             <Field
                                                 label="Max Exposure per Market"
                                                 value={userGuardrailsForm.maxExposurePerMarketPct}
-                                                onChange={(value) =>
+                                                onChange={(value) => {
+                                                    setUserDirty(true)
                                                     setUserGuardrailsForm((prev) => ({
                                                         ...prev,
                                                         maxExposurePerMarketPct: value
                                                     }))
-                                                }
+                                                }}
                                                 suffix="%"
                                                 placeholder="inherit"
                                             />
                                             <Field
                                                 label="Max Exposure per User"
                                                 value={userGuardrailsForm.maxExposurePerUserPct}
-                                                onChange={(value) =>
+                                                onChange={(value) => {
+                                                    setUserDirty(true)
                                                     setUserGuardrailsForm((prev) => ({
                                                         ...prev,
                                                         maxExposurePerUserPct: value
                                                     }))
-                                                }
+                                                }}
                                                 suffix="%"
                                                 placeholder="inherit"
                                             />
                                             <Field
                                                 label="Daily Loss Limit"
                                                 value={userGuardrailsForm.dailyLossLimitPct}
-                                                onChange={(value) =>
+                                                onChange={(value) => {
+                                                    setUserDirty(true)
                                                     setUserGuardrailsForm((prev) => ({
                                                         ...prev,
                                                         dailyLossLimitPct: value
                                                     }))
-                                                }
+                                                }}
                                                 suffix="%"
                                                 placeholder="inherit"
                                             />
                                             <Field
                                                 label="Weekly Loss Limit"
                                                 value={userGuardrailsForm.weeklyLossLimitPct}
-                                                onChange={(value) =>
+                                                onChange={(value) => {
+                                                    setUserDirty(true)
                                                     setUserGuardrailsForm((prev) => ({
                                                         ...prev,
                                                         weeklyLossLimitPct: value
                                                     }))
-                                                }
+                                                }}
                                                 suffix="%"
                                                 placeholder="inherit"
                                             />
                                             <Field
                                                 label="Max Drawdown Limit"
                                                 value={userGuardrailsForm.maxDrawdownLimitPct}
-                                                onChange={(value) =>
+                                                onChange={(value) => {
+                                                    setUserDirty(true)
                                                     setUserGuardrailsForm((prev) => ({
                                                         ...prev,
                                                         maxDrawdownLimitPct: value
                                                     }))
-                                                }
+                                                }}
                                                 suffix="%"
                                                 placeholder="inherit"
                                             />
@@ -1466,49 +1834,162 @@ export default function ConfigPage() {
                                             <Field
                                                 label="Copy % of Notional"
                                                 value={userSizingForm.copyPctNotionalPct}
-                                                onChange={(value) =>
+                                                onChange={(value) => {
+                                                    setUserDirty(true)
                                                     setUserSizingForm((prev) => ({
                                                         ...prev,
                                                         copyPctNotionalPct: value
                                                     }))
-                                                }
+                                                }}
                                                 suffix="%"
                                                 placeholder="inherit"
                                             />
                                             <Field
                                                 label="Min Trade Notional"
                                                 value={userSizingForm.minTradeNotionalUsd}
-                                                onChange={(value) =>
+                                                onChange={(value) => {
+                                                    setUserDirty(true)
                                                     setUserSizingForm((prev) => ({
                                                         ...prev,
                                                         minTradeNotionalUsd: value
                                                     }))
-                                                }
+                                                }}
                                                 suffix="USDC"
                                                 placeholder="inherit"
                                             />
                                             <Field
                                                 label="Max Trade Notional"
                                                 value={userSizingForm.maxTradeNotionalUsd}
-                                                onChange={(value) =>
+                                                onChange={(value) => {
+                                                    setUserDirty(true)
                                                     setUserSizingForm((prev) => ({
                                                         ...prev,
                                                         maxTradeNotionalUsd: value
                                                     }))
-                                                }
+                                                }}
                                                 suffix="USDC"
                                                 placeholder="inherit"
                                             />
                                             <Field
                                                 label="Max Trade % of Bankroll"
                                                 value={userSizingForm.maxTradeBankrollPct}
-                                                onChange={(value) =>
+                                                onChange={(value) => {
+                                                    setUserDirty(true)
                                                     setUserSizingForm((prev) => ({
                                                         ...prev,
                                                         maxTradeBankrollPct: value
                                                     }))
-                                                }
+                                                }}
                                                 suffix="%"
+                                                placeholder="inherit"
+                                            />
+                                        </div>
+                                    </div>
+
+                                    <div className="rounded-2xl border border-[#27272A] bg-[#111111] p-4">
+                                        <div className="flex items-center justify-between gap-3">
+                                            <div className="text-xs uppercase tracking-wider text-[#6f6f6f]">
+                                                Budgeted Dynamic Override
+                                            </div>
+                                            <Button
+                                                onClick={handleSaveUser}
+                                                disabled={!selectedUserId || savingUser}
+                                                className="bg-[#86efac] text-black hover:bg-[#4ade80]"
+                                            >
+                                                {savingUser ? "Saving..." : "Save Overrides"}
+                                            </Button>
+                                        </div>
+                                        <div className="mt-3 grid grid-cols-1 gap-4">
+                                            <div className="flex flex-col gap-2">
+                                                <label className="text-xs uppercase tracking-wider text-[#6f6f6f]">
+                                                    Sizing Mode
+                                                </label>
+                                                <select
+                                                    value={userBudgetedDynamicForm.sizingMode}
+                                                    onChange={(event) => {
+                                                        setUserDirty(true)
+                                                        setUserBudgetedDynamicForm((prev) => ({
+                                                            ...prev,
+                                                            sizingMode: event.target.value as "" | "fixedRate" | "budgetedDynamic"
+                                                        }))
+                                                    }}
+                                                    className="h-10 rounded-lg border border-[#27272A] bg-[#111111] px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-[#86efac]"
+                                                >
+                                                    <option value="">Inherit</option>
+                                                    <option value="fixedRate">Fixed Rate</option>
+                                                    <option value="budgetedDynamic">Budgeted Dynamic</option>
+                                                </select>
+                                            </div>
+                                            <Field
+                                                label="Budget per Leader"
+                                                value={userBudgetedDynamicForm.budgetUsd}
+                                                onChange={(value) => {
+                                                    setUserDirty(true)
+                                                    setUserBudgetedDynamicForm((prev) => ({
+                                                        ...prev,
+                                                        budgetUsd: value
+                                                    }))
+                                                }}
+                                                suffix="USDC"
+                                                placeholder="inherit"
+                                            />
+                                            <Field
+                                                label="r_min (Rate Floor)"
+                                                value={userBudgetedDynamicForm.budgetRMinPct}
+                                                onChange={(value) => {
+                                                    setUserDirty(true)
+                                                    setUserBudgetedDynamicForm((prev) => ({
+                                                        ...prev,
+                                                        budgetRMinPct: value
+                                                    }))
+                                                }}
+                                                suffix="%"
+                                                placeholder="inherit"
+                                            />
+                                            <Field
+                                                label="r_max (Rate Ceiling)"
+                                                value={userBudgetedDynamicForm.budgetRMaxPct}
+                                                onChange={(value) => {
+                                                    setUserDirty(true)
+                                                    setUserBudgetedDynamicForm((prev) => ({
+                                                        ...prev,
+                                                        budgetRMaxPct: value
+                                                    }))
+                                                }}
+                                                suffix="%"
+                                                placeholder="inherit"
+                                            />
+                                            <div className="flex flex-col gap-2">
+                                                <label className="text-xs uppercase tracking-wider text-[#6f6f6f]">
+                                                    Budget Enforcement
+                                                </label>
+                                                <select
+                                                    value={userBudgetedDynamicForm.budgetEnforcement}
+                                                    onChange={(event) => {
+                                                        setUserDirty(true)
+                                                        setUserBudgetedDynamicForm((prev) => ({
+                                                            ...prev,
+                                                            budgetEnforcement: event.target.value as "" | "hard" | "soft"
+                                                        }))
+                                                    }}
+                                                    className="h-10 rounded-lg border border-[#27272A] bg-[#111111] px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-[#86efac]"
+                                                >
+                                                    <option value="">Inherit</option>
+                                                    <option value="hard">Hard</option>
+                                                    <option value="soft">Soft</option>
+                                                </select>
+                                            </div>
+                                            <Field
+                                                label="Min Leader Trade"
+                                                value={userBudgetedDynamicForm.minLeaderTradeNotionalUsd}
+                                                onChange={(value) => {
+                                                    setUserDirty(true)
+                                                    setUserBudgetedDynamicForm((prev) => ({
+                                                        ...prev,
+                                                        minLeaderTradeNotionalUsd: value
+                                                    }))
+                                                }}
+                                                suffix="USDC"
                                                 placeholder="inherit"
                                             />
                                         </div>

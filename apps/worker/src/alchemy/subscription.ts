@@ -41,7 +41,8 @@ const logger = createChildLogger({ module: "alchemy-ws" });
  */
 const WS_SOURCE = "ONCHAIN_WS";
 
-const TRACKED_WALLET_CACHE_TTL_MS = 60_000;
+// Keep this short so dashboard "pause user" takes effect quickly.
+const TRACKED_WALLET_CACHE_TTL_MS = 5_000;
 let trackedWalletsCache = new Map<string, TrackedWalletInfo>();
 let trackedWalletsLoadedAt = 0;
 let trackedWalletsLoadPromise: Promise<Map<string, TrackedWalletInfo>> | null = null;
@@ -52,9 +53,11 @@ const normalizeWallet = (wallet: string | null | undefined) =>
 async function loadTrackedWallets(): Promise<Map<string, TrackedWalletInfo>> {
     const [users, proxies] = await Promise.all([
         prisma.followedUser.findMany({
+            where: { enabled: true },
             select: { id: true, profileWallet: true },
         }),
         prisma.followedUserProxyWallet.findMany({
+            where: { followedUser: { enabled: true } },
             select: {
                 wallet: true,
                 followedUser: { select: { id: true, profileWallet: true } },

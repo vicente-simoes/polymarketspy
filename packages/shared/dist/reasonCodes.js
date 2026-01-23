@@ -38,4 +38,9 @@ export const ReasonCodes = {
     BUFFERED: "BUFFERED",
     /** Buffered notional below min exec threshold on flush */
     BUFFER_FLUSH_BELOW_MIN_EXEC: "BUFFER_FLUSH_BELOW_MIN_EXEC",
+    // Budgeted dynamic sizing reason codes
+    /** Leader trade notional is below configured minimum (filtered) */
+    LEADER_TRADE_BELOW_MIN_NOTIONAL: "LEADER_TRADE_BELOW_MIN_NOTIONAL",
+    /** HARD budget enforcement: exposure would exceed budget allocation */
+    BUDGET_HARD_CAP_EXCEEDED: "BUDGET_HARD_CAP_EXCEEDED",
 };

@@ -3,6 +3,8 @@ import { getServerSession } from "next-auth"
 import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import prisma from "@/lib/prisma"
 
+export const dynamic = "force-dynamic"
+
 const SYSTEM_CONFIG_KEY = "system:config"
 const SMALL_TRADE_BUFFERING_KEY = "config:smallTradeBuffering"
 const DEFAULT_INITIAL_BANKROLL_MICROS = 100_000_000 // $100
@@ -101,7 +103,10 @@ export async function POST(request: Request) {
             })
         }
 
-        return NextResponse.json({ success: true })
+        return NextResponse.json(
+            { success: true },
+            { headers: { "Cache-Control": "no-store" } }
+        )
     } catch (error) {
         console.error("Failed to update global config:", error)
         return NextResponse.json({ error: "Internal Server Error" }, { status: 500 })
@@ -141,14 +146,17 @@ export async function GET() {
         })
         const smallTradeBuffering = (bufferingRow?.valueJson || {}) as Record<string, any>
 
-        return NextResponse.json({
-            guardrails: guardrails?.configJson || {},
-            sizing: sizing?.configJson || {},
-            system: {
-                initialBankrollMicros
+        return NextResponse.json(
+            {
+                guardrails: guardrails?.configJson || {},
+                sizing: sizing?.configJson || {},
+                system: {
+                    initialBankrollMicros
+                },
+                smallTradeBuffering
             },
-            smallTradeBuffering
-        })
+            { headers: { "Cache-Control": "no-store" } }
+        )
     } catch (error) {
         console.error("Failed to fetch global config:", error)
         return NextResponse.json({ error: "Internal Server Error" }, { status: 500 })

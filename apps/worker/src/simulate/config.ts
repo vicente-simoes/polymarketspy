@@ -10,9 +10,11 @@ import { prisma } from "../db/prisma.js";
 import { createChildLogger } from "../log/logger.js";
 import {
     GuardrailsSchema,
-    SizingSchema,
+    SizingSchemaBase,
     SmallTradeBufferingSchema,
     SmallTradeNettingMode,
+    SizingMode,
+    BudgetEnforcement,
     type Guardrails,
     type Sizing,
     type SmallTradeBuffering,
@@ -56,6 +58,15 @@ export const DEFAULT_SIZING: Sizing = {
     minTradeNotionalMicros: 5_000_000, // 5 USDC
     maxTradeNotionalMicros: 250_000_000, // 250 USDC
     maxTradeBankrollBps: 75, // 0.75% = 75 bps
+
+    // Budgeted Dynamic (disabled by default - no behavior change)
+    sizingMode: SizingMode.FIXED_RATE,
+    budgetedDynamicEnabled: false,
+    budgetUsdcMicros: 0,
+    budgetRMinBps: 0,
+    budgetRMaxBps: 100, // 1.00% ceiling
+    budgetEnforcement: BudgetEnforcement.HARD,
+    minLeaderTradeNotionalMicros: 0, // disabled
 };
 
 /**
@@ -138,7 +149,7 @@ async function loadGlobalConfig(): Promise<{
     let sizing = DEFAULT_SIZING;
     if (sizingRow) {
         try {
-            const parsed = SizingSchema.partial().parse(sizingRow.configJson);
+            const parsed = SizingSchemaBase.partial().parse(sizingRow.configJson);
             sizing = { ...DEFAULT_SIZING, ...parsed };
         } catch (err) {
             logger.warn({ err }, "Failed to parse global sizing, using defaults");
@@ -204,8 +215,10 @@ async function loadUserConfig(
     let sizing = globalSizing;
     if (sizingRow) {
         try {
-            const parsed = SizingSchema.partial().parse(sizingRow.configJson);
-            sizing = { ...globalSizing, ...parsed };
+            const parsed = SizingSchemaBase.partial().parse(sizingRow.configJson);
+            // Drop budgetedDynamicEnabled from per-user config - it's a GLOBAL-only kill switch
+            const { budgetedDynamicEnabled: _ignored, ...userSizingOverrides } = parsed;
+            sizing = { ...globalSizing, ...userSizingOverrides };
         } catch (err) {
             logger.warn({ err, followedUserId }, "Failed to parse user sizing, using global");
         }
