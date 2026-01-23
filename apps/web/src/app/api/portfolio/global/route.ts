@@ -62,8 +62,8 @@ export async function GET() {
         }
 
         const positionsRaw = await prisma.ledgerEntry.groupBy({
-            by: ["assetId", "marketId"],
-            where: { portfolioScope: "EXEC_GLOBAL" },
+            by: ["assetId"],
+            where: { portfolioScope: "EXEC_GLOBAL", assetId: { not: null } },
             _sum: {
                 shareDeltaMicros: true,
                 cashDeltaMicros: true
@@ -83,6 +83,7 @@ export async function GET() {
                   where: { tokenId: { in: assetIds } },
                   select: {
                       tokenId: true,
+                      marketId: true,
                       marketTitle: true,
                       outcomeLabel: true
                   }
@@ -114,7 +115,7 @@ export async function GET() {
 
             return {
                 assetId: p.assetId,
-                marketId: p.marketId,
+                marketId: meta?.marketId ?? null,
                 shares,
                 invested: -netCashFlow,
                 markPrice,
@@ -136,7 +137,7 @@ export async function GET() {
             )
             totalExposureValue += exposureValue
 
-            const marketId = position.marketId ?? "unknown"
+            const marketId = position.marketId ?? position.assetId ?? "unknown"
             const current = exposureByMarketMap.get(marketId)
             if (current) {
                 current.exposure += exposureValue

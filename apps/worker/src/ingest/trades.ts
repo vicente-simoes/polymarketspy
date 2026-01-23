@@ -84,7 +84,9 @@ function tradeToDbData(
 
     const txHash = trade.transactionHash ?? trade.transaction_hash ?? null;
     const assetId = trade.assetId ?? trade.asset ?? trade.asset_id ?? null;
-    const marketId = trade.marketId ?? trade.market ?? trade.conditionId ?? null;
+    // marketId should only contain the Polymarket market id (not conditionId).
+    const marketId = trade.marketId ?? trade.market ?? null;
+    const conditionId = trade.conditionId ?? null;
     const proxyWalletRaw = trade.proxyWallet ?? trade.owner ?? null;
     const proxyWallet =
         proxyWalletRaw && proxyWalletRaw !== profileWallet ? proxyWalletRaw : null;
@@ -132,6 +134,7 @@ function tradeToDbData(
         proxyWallet,
         marketId,
         assetId,
+        conditionId,
         side,
         priceMicros,
         shareMicros,

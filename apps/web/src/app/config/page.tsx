@@ -962,7 +962,7 @@ export default function ConfigPage() {
                         </div>
 
                         <div className="grid grid-cols-1 xl:grid-cols-[1.4fr_1fr] gap-6">
-                            <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
+                            <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6 xl:row-span-2">
                                 <div className="flex items-center justify-between gap-4">
                                     <div>
                                         <div className="text-sm text-[#6f6f6f] flex items-center gap-2">
@@ -1177,8 +1177,7 @@ export default function ConfigPage() {
                                 ) : null}
                             </div>
 
-                            <div className="flex flex-col gap-6">
-                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
+                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6 xl:col-start-2 xl:row-start-1">
                                     <div className="flex items-center justify-between gap-4">
                                         <div>
                                             <div className="text-sm text-[#6f6f6f] flex items-center gap-2">
@@ -1234,7 +1233,7 @@ export default function ConfigPage() {
                                     </div>
                                 </div>
 
-                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
+                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6 xl:col-start-2 xl:row-start-2">
                                     <div className="flex items-center justify-between gap-4">
                                         <div>
                                             <div className="text-sm text-[#6f6f6f] flex items-center gap-2">
@@ -1301,7 +1300,7 @@ export default function ConfigPage() {
                                     </div>
                                 </div>
 
-                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
+                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6 xl:col-start-1 xl:row-start-3">
                                     <div className="flex items-center justify-between gap-4">
                                         <div>
                                             <div className="text-sm text-[#6f6f6f] flex items-center gap-2">
@@ -1442,7 +1441,7 @@ export default function ConfigPage() {
                                     </div>
                                 </div>
 
-                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
+                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6 xl:col-start-2 xl:row-start-3">
                                     <div className="flex items-center justify-between gap-4">
                                         <div>
                                             <div className="text-sm text-[#6f6f6f] flex items-center gap-2">
@@ -1574,7 +1573,7 @@ export default function ConfigPage() {
                                     </div>
                                 </div>
 
-                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
+                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6 xl:col-span-2 xl:row-start-4">
                                     <div className="text-sm text-[#6f6f6f] flex items-center gap-2">
                                         <ClipboardList className="h-4 w-4 text-[#86efac]" />
                                         Test Config (24h)
@@ -1605,7 +1604,6 @@ export default function ConfigPage() {
                                         </div>
                                     )}
                                 </div>
-                            </div>
                         </div>
 
                         <div className="grid grid-cols-1 xl:grid-cols-[1.4fr_1fr] gap-6">

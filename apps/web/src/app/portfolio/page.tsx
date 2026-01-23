@@ -138,6 +138,16 @@ export default function PortfolioPage() {
     const drawdownStatus =
         drawdownUtilization > 90 ? "bad" : drawdownUtilization > 70 ? "warn" : "good"
 
+    const sortedPositions = data?.positions
+        ? [...data.positions].sort((a, b) => {
+              const aValue = a.marketValue ?? a.invested
+              const bValue = b.marketValue ?? b.invested
+              const diff = Math.abs(bValue) - Math.abs(aValue)
+              if (diff !== 0) return diff
+              return a.marketTitle.localeCompare(b.marketTitle)
+          })
+        : []
+
     return (
         <div className="relative h-screen w-full bg-black text-white overflow-hidden">
             <Header />
@@ -343,8 +353,8 @@ export default function PortfolioPage() {
                                                 </tr>
                                             </thead>
                                             <tbody>
-                                                {data.positions.length > 0 ? (
-                                                    data.positions.map((position) => {
+                                                {sortedPositions.length > 0 ? (
+                                                    sortedPositions.map((position) => {
                                                         const marketValue =
                                                             position.marketValue ?? position.invested
                                                         return (

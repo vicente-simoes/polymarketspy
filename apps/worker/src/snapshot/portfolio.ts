@@ -37,7 +37,6 @@ function getBucketTime(timestamp: Date): Date {
  */
 interface Position {
     assetId: string;
-    marketId: string | null;
     shareMicros: bigint;
     costBasisMicros: bigint;
 }
@@ -51,7 +50,7 @@ async function getPositions(
 ): Promise<Position[]> {
     // Aggregate ledger entries by asset
     const entries = await prisma.ledgerEntry.groupBy({
-        by: ["assetId", "marketId"],
+        by: ["assetId"],
         where: {
             portfolioScope: scope,
             ...(scope === PortfolioScope.EXEC_GLOBAL && followedUserId === null
@@ -77,7 +76,6 @@ async function getPositions(
 
         positions.push({
             assetId: entry.assetId,
-            marketId: entry.marketId,
             shareMicros,
             costBasisMicros,
         });
