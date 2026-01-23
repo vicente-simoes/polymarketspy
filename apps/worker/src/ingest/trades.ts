@@ -356,8 +356,24 @@ export async function ingestTradesForWalletFast(
             return { newCount: 0, latencyMs: Date.now() - fetchStart };
         }
 
+        if (!proxyRecord.followedUser.enabled) {
+            log.debug(
+                { followedUserId: proxyRecord.followedUser.id },
+                "Skipping fast trade ingest: followed user is disabled"
+            );
+            return { newCount: 0, latencyMs: Date.now() - fetchStart };
+        }
+
         // Use the profile wallet for fetching
         return ingestTradesForWalletFast(proxyRecord.followedUser.profileWallet, options);
+    }
+
+    if (!followedUser.enabled) {
+        log.debug(
+            { followedUserId: followedUser.id },
+            "Skipping fast trade ingest: followed user is disabled"
+        );
+        return { newCount: 0, latencyMs: Date.now() - fetchStart };
     }
 
     // Fetch trades from API

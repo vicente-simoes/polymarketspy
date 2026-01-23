@@ -3,22 +3,35 @@
  *
  * Consumes trade and activity events, fetches full event data from DB,
  * and feeds them into the aggregator for grouping.
+ *
+ * When small trade buffering is enabled:
+ * - Computes copy notional for the trade
+ * - If >= threshold: executes immediately (bypasses aggregator)
+ * - If < threshold: buffers in small trade buffer for batching
  */
 
-import { TradeSide, ActivityType } from "@prisma/client";
+import { TradeSide, ActivityType, PortfolioScope } from "@prisma/client";
+import { SizingMode } from "@copybot/shared";
 import { prisma } from "../db/prisma.js";
 import { createChildLogger } from "../log/logger.js";
-import { createWorker, QUEUE_NAMES } from "../queue/queues.js";
+import { createWorker, QUEUE_NAMES, queues } from "../queue/queues.js";
 import { addTradeToAggregator, addActivityToAggregator } from "./aggregator.js";
 import {
     type GroupJobData,
     type PendingTradeEvent,
     type PendingActivityEvent,
+    type TradeEventGroup,
     isTradeJobData,
     isActivityJobData,
+    serializeEventGroup,
+    getEffectiveTokenId,
 } from "./types.js";
 import type { ActivityPayload } from "../poly/types.js";
 import { ensureSubscribed } from "./bookService.js";
+import { getGlobalConfig, getUserConfig } from "./config.js";
+import { appendTrade, mergeAndFlushBucket, type BufferTradeInput } from "./smallTradeBuffer.js";
+import { bucketToTradeEventGroup } from "./flushLoop.js";
+import { computeTargetShares, computeRawTargetNotional } from "./sizing.js";
 
 const logger = createChildLogger({ module: "group-events-processor" });
 
@@ -47,7 +60,69 @@ export const groupEventsWorker = createWorker<GroupJobData>(
 );
 
 /**
+ * Get leader's exposure from latest SHADOW_USER snapshot.
+ * Used for budgeted dynamic sizing to compute r_u = budget / leaderExposure.
+ */
+async function getLeaderExposureMicros(followedUserId: string): Promise<bigint> {
+    const snapshot = await prisma.portfolioSnapshot.findFirst({
+        where: {
+            portfolioScope: PortfolioScope.SHADOW_USER,
+            followedUserId,
+        },
+        orderBy: { bucketTime: "desc" },
+        select: { exposureMicros: true },
+    });
+
+    if (!snapshot) {
+        logger.warn(
+            { followedUserId },
+            "No SHADOW_USER snapshot found for leader exposure in processor, using 0"
+        );
+        return BigInt(0);
+    }
+
+    return snapshot.exposureMicros;
+}
+
+/**
+ * Create a single-trade group for immediate execution.
+ */
+function createSingleTradeGroup(
+    trade: PendingTradeEvent,
+    tokenId: string
+): TradeEventGroup {
+    const windowStart = new Date();
+    const groupKey = `${trade.followedUserId}:${tokenId}:${trade.side}:${windowStart.toISOString()}`;
+
+    // VWAP for single trade is just the trade price
+    const vwapPriceMicros = trade.priceMicros;
+
+    return {
+        type: "trade",
+        groupKey,
+        followedUserId: trade.followedUserId,
+        assetId: trade.assetId,
+        rawTokenId: trade.rawTokenId,
+        marketId: trade.marketId,
+        side: trade.side,
+        totalNotionalMicros: trade.notionalMicros,
+        totalShareMicros: trade.shareMicros,
+        vwapPriceMicros,
+        earliestDetectTime: trade.detectTime,
+        windowStart,
+        tradeEventIds: [trade.tradeEventId],
+    };
+}
+
+/**
  * Process a trade event for aggregation.
+ *
+ * When small trade buffering is enabled:
+ * - Computes copy notional for the trade
+ * - If >= threshold: executes immediately (bypasses aggregator)
+ * - If < threshold: buffers in small trade buffer
+ *
+ * When buffering is disabled: uses existing 250ms aggregator.
  */
 async function processTradeForAggregation(
     tradeEventId: string,
@@ -82,7 +157,7 @@ async function processTradeForAggregation(
     // This warms the cache so it's ready when the group flushes to executor
     ensureSubscribed(effectiveTokenId);
 
-    // Create pending event for aggregator
+    // Create pending event
     const pendingEvent: PendingTradeEvent = {
         type: "trade",
         tradeEventId: trade.id,
@@ -98,9 +173,153 @@ async function processTradeForAggregation(
         eventTime: trade.eventTime,
     };
 
-    // Add to aggregator
-    await addTradeToAggregator(pendingEvent);
-    log.debug("Trade added to aggregator");
+    // Load per-user config to check if buffering is enabled and get sizing mode
+    const { sizing, smallTradeBuffering } = await getUserConfig(followedUserId);
+
+    // If buffering is disabled, use existing aggregator
+    if (!smallTradeBuffering.enabled) {
+        await addTradeToAggregator(pendingEvent);
+        log.debug("Trade added to aggregator (buffering disabled)");
+        return;
+    }
+
+    // Check if budgeted dynamic is active for this user
+    const useBudgetedDynamic =
+        sizing.budgetedDynamicEnabled &&
+        sizing.sizingMode === SizingMode.BUDGETED_DYNAMIC;
+
+    // Buffering is enabled - compute copy notional using mode-aware logic
+    let rawCopyNotional: bigint;
+    let leaderExposureMicros: bigint | undefined;
+    let effectiveRateBps: number | undefined;
+
+    if (useBudgetedDynamic) {
+        // Budgeted dynamic: compute raw target using budget / leader exposure
+        leaderExposureMicros = await getLeaderExposureMicros(followedUserId);
+        const rawResult = computeRawTargetNotional(
+            trade.notionalMicros,
+            sizing,
+            leaderExposureMicros
+        );
+        rawCopyNotional = rawResult.rawTargetMicros;
+        effectiveRateBps = rawResult.effectiveRateBps;
+
+        log.debug(
+            {
+                theirNotional: trade.notionalMicros.toString(),
+                budgetUsdcMicros: sizing.budgetUsdcMicros,
+                leaderExposureMicros: leaderExposureMicros.toString(),
+                effectiveRateBps,
+                rawCopyNotional: rawCopyNotional.toString(),
+                threshold: smallTradeBuffering.notionalThresholdMicros,
+            },
+            "Computed budgeted dynamic raw copy notional for buffering"
+        );
+    } else {
+        // Fixed-rate: use standard formula
+        const rawResult = computeRawTargetNotional(trade.notionalMicros, sizing);
+        rawCopyNotional = rawResult.rawTargetMicros;
+
+        log.debug(
+            {
+                theirNotional: trade.notionalMicros.toString(),
+                copyPctBps: sizing.copyPctNotionalBps,
+                rawCopyNotional: rawCopyNotional.toString(),
+                threshold: smallTradeBuffering.notionalThresholdMicros,
+            },
+            "Computed fixed-rate raw copy notional for buffering"
+        );
+    }
+
+    // If copy notional >= threshold, check if there's an existing bucket to merge with
+    if (rawCopyNotional >= BigInt(smallTradeBuffering.notionalThresholdMicros)) {
+        // First, check if there's a bucket with pending small trades for this position
+        const copyShareMicros = computeTargetShares(rawCopyNotional, trade.priceMicros);
+        const bufferInput: BufferTradeInput = {
+            followedUserId,
+            tokenId: effectiveTokenId,
+            marketId: trade.marketId,
+            side: trade.side,
+            copyNotionalMicros: rawCopyNotional,
+            copyShareMicros,
+            priceMicros: trade.priceMicros,
+            tradeEventId: trade.id,
+        };
+
+        const mergeResult = await mergeAndFlushBucket(bufferInput, smallTradeBuffering);
+
+        if (mergeResult && mergeResult.executed) {
+            // Large trade was merged with existing small trades and flushed
+            log.info(
+                {
+                    rawCopyNotional: rawCopyNotional.toString(),
+                    mergedCount: mergeResult.bucket.countTradesBuffered,
+                },
+                "Large trade merged with pending small trades and flushed"
+            );
+
+            // Convert merged bucket to group and enqueue
+            const group = bucketToTradeEventGroup(mergeResult.bucket);
+            const queueGroup = serializeEventGroup(group);
+
+            await queues.copyAttemptGlobal.add("copy-attempt-global", {
+                group: queueGroup,
+                portfolioScope: "EXEC_GLOBAL",
+                sourceType: "BUFFER",
+                bufferedTradeCount: mergeResult.bucket.countTradesBuffered,
+            });
+
+            return;
+        }
+
+        // No existing bucket to merge with - execute immediately as single trade
+        log.info(
+            { rawCopyNotional: rawCopyNotional.toString() },
+            "Trade above threshold, executing immediately"
+        );
+
+        // Create a single-trade group and enqueue for immediate execution
+        const group = createSingleTradeGroup(pendingEvent, effectiveTokenId);
+        const queueGroup = serializeEventGroup(group);
+
+        await queues.copyAttemptGlobal.add("copy-attempt-global", {
+            group: queueGroup,
+            portfolioScope: "EXEC_GLOBAL",
+            sourceType: "IMMEDIATE",
+            bufferedTradeCount: 1,
+        });
+
+        return;
+    }
+
+    // Trade is "small" - add to buffer
+    const copyShareMicros = computeTargetShares(rawCopyNotional, trade.priceMicros);
+
+    const bufferInput: BufferTradeInput = {
+        followedUserId,
+        tokenId: effectiveTokenId,
+        marketId: trade.marketId,
+        side: trade.side,
+        copyNotionalMicros: rawCopyNotional,
+        copyShareMicros,
+        priceMicros: trade.priceMicros,
+        tradeEventId: trade.id,
+    };
+
+    const result = await appendTrade(bufferInput, smallTradeBuffering);
+
+    if (result.buffered) {
+        log.debug({ bucketKey: result.bucketKey }, "Trade buffered (small trade)");
+    }
+
+    // If a flush was triggered (e.g., opposite side in sameSideOnly mode),
+    // we'll handle the execution in the flush loop (step 6)
+    if (result.flushTriggered) {
+        log.debug(
+            { reason: result.flushTriggered.reason, executed: result.flushTriggered.executed },
+            "Buffer flush triggered"
+        );
+    }
 }
 
 /**

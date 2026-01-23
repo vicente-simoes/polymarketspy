@@ -196,11 +196,20 @@ export function isActivityJobData(data: GroupJobData): data is GroupActivityJobD
 }
 
 /**
+ * Source type for copy attempts (matches Prisma CopySourceType enum).
+ */
+export type CopySourceType = "IMMEDIATE" | "BUFFER" | "AGGREGATOR";
+
+/**
  * Job payload for copy attempt queues.
  */
 export interface CopyAttemptJobData {
     group: QueueEventGroup;
     portfolioScope: "EXEC_USER" | "EXEC_GLOBAL";
+    /** Source of this copy attempt */
+    sourceType?: CopySourceType;
+    /** Number of trades merged (for BUFFER source type) */
+    bufferedTradeCount?: number;
 }
 
 /**

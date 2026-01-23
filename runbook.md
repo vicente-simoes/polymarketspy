@@ -93,3 +93,23 @@ docker compose run --rm worker sh -lc 'cd /app && npx prisma migrate deploy'
 
 # start the rest
 docker compose up -d
+
+
+
+
+# REDEPLOY
+git status
+git pull
+
+
+cd docker
+docker compose down
+docker compose build --no-cache web worker
+docker compose up -d
+
+docker compose run --rm worker sh -lc "cd /app && npx prisma migrate deploy"
+
+docker compose ps
+docker compose logs -n 80 --no-log-prefix worker
+curl -sS http://127.0.0.1:8081/health | head
+curl -kI https://polymarketspy.live

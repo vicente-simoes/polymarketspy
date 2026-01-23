@@ -89,6 +89,14 @@ function cacheFailedToken(tokenId: string): void {
 }
 
 /**
+ * Check whether a token has been cached as resolved (e.g. its order book 404'd).
+ * Useful for prioritizing resolution/settlement checks without spamming Gamma.
+ */
+export function isResolvedTokenCached(tokenId: string): boolean {
+    return isTokenCached(tokenId);
+}
+
+/**
  * Make a rate-limited request to Polymarket Data API.
  * Uses high-priority limiter for time-sensitive trade/activity requests.
  */

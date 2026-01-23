@@ -11,12 +11,17 @@
  */
 
 import { TradeSide, PortfolioScope, CopyDecision } from "@prisma/client";
-import { ReasonCodes, type ReasonCode } from "@copybot/shared";
+import { ReasonCodes, SizingMode, BudgetEnforcement, type ReasonCode } from "@copybot/shared";
 import { prisma } from "../db/prisma.js";
 import { createChildLogger } from "../log/logger.js";
 import { getSystemConfig } from "../config/system.js";
 import { getGlobalConfig, getUserConfig } from "./config.js";
-import { computeTargetNotional, computeTargetShares } from "./sizing.js";
+import {
+    computeTargetNotional,
+    computeTargetShares,
+    computeRawTargetNotional,
+    applyTradeSizingClamps,
+} from "./sizing.js";
 import {
     simulateFromNormalizedBook,
     type SimulationResult,
@@ -34,7 +39,7 @@ import {
     isReducingExposure,
     type PortfolioState,
 } from "./guardrails.js";
-import type { TradeEventGroup, ActivityEventGroup, EventGroup } from "./types.js";
+import type { TradeEventGroup, ActivityEventGroup, EventGroup, CopySourceType } from "./types.js";
 
 const logger = createChildLogger({ module: "executor" });
 
@@ -181,12 +186,46 @@ async function getPortfolioState(
 }
 
 /**
+ * Get leader's exposure from latest SHADOW_USER snapshot.
+ * Used for budgeted dynamic sizing to compute r_u = budget / leaderExposure.
+ */
+async function getLeaderExposureMicros(followedUserId: string): Promise<bigint> {
+    const snapshot = await prisma.portfolioSnapshot.findFirst({
+        where: {
+            portfolioScope: PortfolioScope.SHADOW_USER,
+            followedUserId,
+        },
+        orderBy: { bucketTime: "desc" },
+        select: { exposureMicros: true },
+    });
+
+    if (!snapshot) {
+        logger.warn(
+            { followedUserId },
+            "No SHADOW_USER snapshot found for leader exposure, using 0"
+        );
+        return BigInt(0);
+    }
+
+    return snapshot.exposureMicros;
+}
+
+/**
+ * Options for copy attempt execution.
+ */
+export interface CopyAttemptOptions {
+    sourceType?: CopySourceType;
+    bufferedTradeCount?: number;
+}
+
+/**
  * Execute a copy attempt for a trade event group.
  */
 export async function executeTradeGroup(
     group: TradeEventGroup,
     portfolioScope: PortfolioScope,
-    followedUserId: string | null
+    followedUserId: string | null,
+    options: CopyAttemptOptions = {}
 ): Promise<ExecutionResult> {
     // Use rawTokenId (on-chain) if available, otherwise assetId (API)
     const effectiveTokenId = group.rawTokenId ?? group.assetId;
@@ -207,6 +246,83 @@ export async function executeTradeGroup(
         : await getGlobalConfig();
     const { guardrails, sizing } = config;
 
+    const sourceType = options.sourceType ?? "AGGREGATOR";
+    const isBufferSource = sourceType === "BUFFER";
+
+    // Check if budgeted dynamic is active for this user
+    const useBudgetedDynamic =
+        sizing.budgetedDynamicEnabled &&
+        sizing.sizingMode === SizingMode.BUDGETED_DYNAMIC;
+
+    // ─── MIN LEADER TRADE NOTIONAL FILTER ──────────────────────────────────
+    // Skip small leader trades (applies only to non-buffer trades)
+    if (
+        !isBufferSource &&
+        sizing.minLeaderTradeNotionalMicros > 0 &&
+        group.totalNotionalMicros < BigInt(sizing.minLeaderTradeNotionalMicros)
+    ) {
+        log.info(
+            {
+                theirNotional: group.totalNotionalMicros.toString(),
+                minLeaderTradeNotional: sizing.minLeaderTradeNotionalMicros,
+            },
+            "Leader trade below min notional filter, skipping"
+        );
+
+        // Write CopyAttempt row for visibility
+        const copyAttemptData = {
+            portfolioScope,
+            followedUserId,
+            groupKey: group.groupKey,
+            decision: CopyDecision.SKIP,
+            reasonCodes: [ReasonCodes.LEADER_TRADE_BELOW_MIN_NOTIONAL],
+            sourceType,
+            bufferedTradeCount: options.bufferedTradeCount ?? group.tradeEventIds.length,
+            targetNotionalMicros: BigInt(0),
+            filledNotionalMicros: BigInt(0),
+            vwapPriceMicros: null,
+            filledRatioBps: 0,
+            theirReferencePriceMicros: group.vwapPriceMicros,
+            midPriceMicrosAtDecision: 0,
+        };
+
+        if (followedUserId !== null) {
+            await prisma.copyAttempt.upsert({
+                where: {
+                    portfolioScope_followedUserId_groupKey: {
+                        portfolioScope,
+                        followedUserId,
+                        groupKey: group.groupKey,
+                    },
+                },
+                create: copyAttemptData,
+                update: { decision: CopyDecision.SKIP, reasonCodes: [ReasonCodes.LEADER_TRADE_BELOW_MIN_NOTIONAL] },
+            });
+        } else {
+            const existing = await prisma.copyAttempt.findFirst({
+                where: { portfolioScope, followedUserId: null, groupKey: group.groupKey },
+            });
+            if (existing) {
+                await prisma.copyAttempt.update({
+                    where: { id: existing.id },
+                    data: { decision: CopyDecision.SKIP, reasonCodes: [ReasonCodes.LEADER_TRADE_BELOW_MIN_NOTIONAL] },
+                });
+            } else {
+                await prisma.copyAttempt.create({ data: copyAttemptData });
+            }
+        }
+
+        return {
+            decision: CopyDecision.SKIP,
+            reasonCodes: [ReasonCodes.LEADER_TRADE_BELOW_MIN_NOTIONAL],
+            targetNotionalMicros: BigInt(0),
+            filledNotionalMicros: BigInt(0),
+            filledShareMicros: BigInt(0),
+            vwapPriceMicros: 0,
+            filledRatioBps: 0,
+        };
+    }
+
     // 1. Apply timing delay
     log.debug("Applying timing delay");
     await applyTimingDelay(guardrails.decisionLatencyMs, guardrails.jitterMsMax);
@@ -214,12 +330,225 @@ export async function executeTradeGroup(
     // 2. Get portfolio state
     const portfolioState = await getPortfolioState(portfolioScope, followedUserId);
 
-    // 3. Compute target notional
-    const targetResult = computeTargetNotional(
-        group.totalNotionalMicros,
+    // ─── COMPUTE TARGET NOTIONAL (MODE-AWARE + BUFFER-AWARE) ───────────────
+    // For buffer sources: totalNotionalMicros is already the raw copy target
+    // For non-buffer: compute raw target based on sizing mode (fixed or dynamic)
+
+    let rawTargetMicros: bigint;
+    let effectiveRateBps: number | undefined;
+    let clampedToRMin = false;
+    let clampedToRMax = false;
+    let leaderExposureMicros: bigint | undefined;
+
+    if (isBufferSource) {
+        // Buffer trades: notional is already scaled, use directly
+        rawTargetMicros = group.totalNotionalMicros;
+        log.debug({ rawTargetMicros: rawTargetMicros.toString() }, "Using buffer notional as raw target");
+    } else if (useBudgetedDynamic && followedUserId) {
+        // Budgeted dynamic mode: compute rate from budget / leader exposure
+        leaderExposureMicros = await getLeaderExposureMicros(followedUserId);
+        const rawResult = computeRawTargetNotional(
+            group.totalNotionalMicros,
+            sizing,
+            leaderExposureMicros
+        );
+        rawTargetMicros = rawResult.rawTargetMicros;
+        effectiveRateBps = rawResult.effectiveRateBps;
+        clampedToRMin = rawResult.clampedToRMin ?? false;
+        clampedToRMax = rawResult.clampedToRMax ?? false;
+
+        log.debug(
+            {
+                theirNotional: group.totalNotionalMicros.toString(),
+                budgetUsdcMicros: sizing.budgetUsdcMicros,
+                leaderExposureMicros: leaderExposureMicros.toString(),
+                effectiveRateBps,
+                rawTargetMicros: rawTargetMicros.toString(),
+                clampedToRMin,
+                clampedToRMax,
+            },
+            "Computed budgeted dynamic raw target"
+        );
+    } else {
+        // Fixed-rate mode: use standard formula
+        const rawResult = computeRawTargetNotional(group.totalNotionalMicros, sizing);
+        rawTargetMicros = rawResult.rawTargetMicros;
+        log.debug(
+            {
+                theirNotional: group.totalNotionalMicros.toString(),
+                copyPctBps: sizing.copyPctNotionalBps,
+                rawTargetMicros: rawTargetMicros.toString(),
+            },
+            "Computed fixed-rate raw target"
+        );
+    }
+
+    // Apply trade-level clamps (min/max notional, bankroll %)
+    let targetResult = applyTradeSizingClamps(
+        rawTargetMicros,
         portfolioState.equityMicros,
         sizing
     );
+
+    // ─── HARD BUDGET ENFORCEMENT ───────────────────────────────────────────
+    // If budgeted dynamic + HARD enforcement + increasing exposure:
+    // Cap target to budget headroom, or skip if headroom exhausted
+    let budgetHeadroomMicros: bigint | undefined;
+    let budgetCapped = false;
+
+    if (
+        useBudgetedDynamic &&
+        followedUserId &&
+        sizing.budgetEnforcement === BudgetEnforcement.HARD
+    ) {
+        // Check if this trade is reducing exposure (allows bypass)
+        const isReducing = effectiveTokenId
+            ? await isReducingExposure(
+                  portfolioScope,
+                  followedUserId,
+                  effectiveTokenId,
+                  group.side
+              )
+            : false;
+
+        if (!isReducing) {
+            // Get current exposure attributed to this leader
+            const currentExposureMicros =
+                portfolioState.exposureByUser.get(followedUserId) ?? BigInt(0);
+            const budgetMicros = BigInt(sizing.budgetUsdcMicros);
+            budgetHeadroomMicros = budgetMicros - currentExposureMicros;
+
+            log.debug(
+                {
+                    budgetMicros: budgetMicros.toString(),
+                    currentExposureMicros: currentExposureMicros.toString(),
+                    budgetHeadroomMicros: budgetHeadroomMicros.toString(),
+                    targetNotionalMicros: targetResult.targetNotionalMicros.toString(),
+                },
+                "Checking HARD budget enforcement"
+            );
+
+            if (budgetHeadroomMicros <= BigInt(0)) {
+                // No headroom: skip trade
+                log.info(
+                    {
+                        budgetMicros: budgetMicros.toString(),
+                        currentExposureMicros: currentExposureMicros.toString(),
+                    },
+                    "Budget exhausted, skipping trade"
+                );
+
+                // Write CopyAttempt row
+                const copyAttemptData = {
+                    portfolioScope,
+                    followedUserId,
+                    groupKey: group.groupKey,
+                    decision: CopyDecision.SKIP,
+                    reasonCodes: [ReasonCodes.BUDGET_HARD_CAP_EXCEEDED],
+                    sourceType,
+                    bufferedTradeCount: options.bufferedTradeCount ?? group.tradeEventIds.length,
+                    targetNotionalMicros: targetResult.targetNotionalMicros,
+                    filledNotionalMicros: BigInt(0),
+                    vwapPriceMicros: null,
+                    filledRatioBps: 0,
+                    theirReferencePriceMicros: group.vwapPriceMicros,
+                    midPriceMicrosAtDecision: 0,
+                };
+
+                await prisma.copyAttempt.upsert({
+                    where: {
+                        portfolioScope_followedUserId_groupKey: {
+                            portfolioScope,
+                            followedUserId,
+                            groupKey: group.groupKey,
+                        },
+                    },
+                    create: copyAttemptData,
+                    update: { decision: CopyDecision.SKIP, reasonCodes: [ReasonCodes.BUDGET_HARD_CAP_EXCEEDED] },
+                });
+
+                return {
+                    decision: CopyDecision.SKIP,
+                    reasonCodes: [ReasonCodes.BUDGET_HARD_CAP_EXCEEDED],
+                    targetNotionalMicros: targetResult.targetNotionalMicros,
+                    filledNotionalMicros: BigInt(0),
+                    filledShareMicros: BigInt(0),
+                    vwapPriceMicros: 0,
+                    filledRatioBps: 0,
+                };
+            }
+
+            // Cap to headroom if target exceeds it
+            if (targetResult.targetNotionalMicros > budgetHeadroomMicros) {
+                const cappedTarget = budgetHeadroomMicros;
+
+                // Check if capped target is below minimum
+                if (cappedTarget < BigInt(sizing.minTradeNotionalMicros)) {
+                    log.info(
+                        {
+                            cappedTarget: cappedTarget.toString(),
+                            minTradeNotional: sizing.minTradeNotionalMicros,
+                        },
+                        "Budget-capped target below min trade notional, skipping"
+                    );
+
+                    const copyAttemptData = {
+                        portfolioScope,
+                        followedUserId,
+                        groupKey: group.groupKey,
+                        decision: CopyDecision.SKIP,
+                        reasonCodes: [ReasonCodes.BUDGET_HARD_CAP_EXCEEDED],
+                        sourceType,
+                        bufferedTradeCount: options.bufferedTradeCount ?? group.tradeEventIds.length,
+                        targetNotionalMicros: targetResult.targetNotionalMicros,
+                        filledNotionalMicros: BigInt(0),
+                        vwapPriceMicros: null,
+                        filledRatioBps: 0,
+                        theirReferencePriceMicros: group.vwapPriceMicros,
+                        midPriceMicrosAtDecision: 0,
+                    };
+
+                    await prisma.copyAttempt.upsert({
+                        where: {
+                            portfolioScope_followedUserId_groupKey: {
+                                portfolioScope,
+                                followedUserId,
+                                groupKey: group.groupKey,
+                            },
+                        },
+                        create: copyAttemptData,
+                        update: { decision: CopyDecision.SKIP, reasonCodes: [ReasonCodes.BUDGET_HARD_CAP_EXCEEDED] },
+                    });
+
+                    return {
+                        decision: CopyDecision.SKIP,
+                        reasonCodes: [ReasonCodes.BUDGET_HARD_CAP_EXCEEDED],
+                        targetNotionalMicros: targetResult.targetNotionalMicros,
+                        filledNotionalMicros: BigInt(0),
+                        filledShareMicros: BigInt(0),
+                        vwapPriceMicros: 0,
+                        filledRatioBps: 0,
+                    };
+                }
+
+                // Apply budget cap
+                log.info(
+                    {
+                        originalTarget: targetResult.targetNotionalMicros.toString(),
+                        cappedTarget: cappedTarget.toString(),
+                        budgetHeadroom: budgetHeadroomMicros.toString(),
+                    },
+                    "Capping target to budget headroom"
+                );
+
+                targetResult = {
+                    ...targetResult,
+                    targetNotionalMicros: cappedTarget,
+                };
+                budgetCapped = true;
+            }
+        }
+    }
 
     // 4. Check if we have a token ID
     if (!effectiveTokenId) {
@@ -282,16 +611,42 @@ export async function executeTradeGroup(
     // Log decision inputs for observability (helps debug "always skip" issues)
     log.info(
         {
+            // Trade basics
             side: group.side,
             theirRefPriceMicros: group.vwapPriceMicros,
+            theirNotionalMicros: group.totalNotionalMicros.toString(),
+
+            // Book state
             bestBidMicros,
             bestAskMicros,
             midPriceMicros,
             spreadMicros,
             maxPriceMicros: priceBounds.maxPriceMicros,
             minPriceMicros: priceBounds.minPriceMicros,
+
+            // Sizing
             targetNotionalMicros: targetResult.targetNotionalMicros.toString(),
             targetShareMicros: targetShareMicros.toString(),
+            rawTargetMicros: rawTargetMicros.toString(),
+            clampedToMin: targetResult.clampedToMin,
+            clampedToMax: targetResult.clampedToMax,
+            clampedByBankroll: targetResult.clampedByBankroll,
+
+            // Budgeted dynamic (when applicable)
+            sizingMode: sizing.sizingMode,
+            budgetedDynamicEnabled: sizing.budgetedDynamicEnabled,
+            budgetEnforcement: sizing.budgetEnforcement,
+            ...(useBudgetedDynamic && {
+                budgetUsdcMicros: sizing.budgetUsdcMicros,
+                leaderExposureMicros: leaderExposureMicros?.toString(),
+                effectiveRateBps,
+                clampedToRMin,
+                clampedToRMax,
+                budgetHeadroomMicros: budgetHeadroomMicros?.toString(),
+                budgetCapped,
+            }),
+
+            // Simulation results
             availableNotionalMicros: simulation.availableNotionalMicros.toString(),
             filledNotionalMicros: simulation.filledNotionalMicros.toString(),
             filledShareMicros: simulation.filledShareMicros.toString(),
@@ -299,6 +654,10 @@ export async function executeTradeGroup(
             simulationSuccess: simulation.success,
             bookSource: bookResult.source,
             bookStale: bookResult.stale,
+
+            // Source type
+            sourceType,
+            isBufferSource,
         },
         "Copy attempt decision inputs"
     );
@@ -407,12 +766,16 @@ export async function executeTradeGroup(
     // 11. Write CopyAttempt to database
     // Handle the upsert differently based on whether followedUserId is null
     // Prisma compound unique with nullable field requires special handling
+    const bufferedTradeCount = options.bufferedTradeCount ?? group.tradeEventIds.length;
+
     const copyAttemptData = {
         portfolioScope,
         followedUserId,
         groupKey: group.groupKey,
         decision,
         reasonCodes: uniqueReasons,
+        sourceType,
+        bufferedTradeCount,
         targetNotionalMicros: targetResult.targetNotionalMicros,
         filledNotionalMicros: decision === CopyDecision.EXECUTE ? simulation.filledNotionalMicros : BigInt(0),
         vwapPriceMicros: decision === CopyDecision.EXECUTE ? simulation.vwapPriceMicros : null,
@@ -565,14 +928,15 @@ export async function executeActivityGroup(
  */
 export async function executeCopyAttempt(
     group: EventGroup,
-    portfolioScope: PortfolioScope
+    portfolioScope: PortfolioScope,
+    options: CopyAttemptOptions = {}
 ): Promise<ExecutionResult> {
     // Single global execution portfolio, but we still attribute every attempt
     // to the followed user that triggered it (for overrides + reporting).
     const followedUserId = group.followedUserId;
 
     if (group.type === "trade") {
-        return executeTradeGroup(group, portfolioScope, followedUserId);
+        return executeTradeGroup(group, portfolioScope, followedUserId, options);
     } else {
         return executeActivityGroup(group, portfolioScope, followedUserId);
     }

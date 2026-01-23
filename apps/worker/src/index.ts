@@ -5,13 +5,21 @@ import { redisConnection } from "./queue/queues.js";
 import { startPolling, stopPolling } from "./ingest/index.js";
 import { startPortfolioWorkers } from "./portfolio/index.js";
 import { startAlchemySubscription, stopAlchemySubscription, setAlchemyRedisClient } from "./alchemy/index.js";
-import { startGroupEventsWorker, startCopyAttemptWorkers, flushAllGroups } from "./simulate/index.js";
+import {
+    startGroupEventsWorker,
+    startCopyAttemptWorkers,
+    flushAllGroups,
+    startFlushLoop,
+    stopFlushLoopGracefully,
+    setBufferRedisClient,
+} from "./simulate/index.js";
 import { startSnapshotLoops, stopSnapshotLoops } from "./snapshot/index.js";
 import { startReconcileWorker, stopReconcileWorker, flushPendingReconciles } from "./reconcile/index.js";
 import { startEnrichmentProcessor, stopEnrichmentProcessor } from "./enrichment/index.js";
 import { loadResolvedTokensFromRedis, setRedisClient } from "./poly/index.js";
 import { stopBookService } from "./simulate/bookService.js";
 import { env } from "./config/env.js";
+import { startSettlementLoop, stopSettlementLoop } from "./settlement.js";
 
 async function main() {
     logger.info("Worker starting...");
@@ -41,6 +49,9 @@ async function main() {
     // Set up Alchemy rate limit persistence
     setAlchemyRedisClient(redisConnection);
 
+    // Set up small trade buffer Redis client
+    setBufferRedisClient(redisConnection);
+
     // Start health server
     startHealthServer();
 
@@ -55,6 +66,9 @@ async function main() {
 
     // Start copy attempt workers (executable simulation)
     startCopyAttemptWorkers();
+
+    // Start small trade buffer flush loop (checks for due buckets every 100ms)
+    startFlushLoop();
 
     // Start Alchemy WebSocket subscription (non-canonical trigger)
     // Can be disabled via ALCHEMY_WS_ENABLED=false for development
@@ -80,6 +94,9 @@ async function main() {
     // Start snapshot loops (price refresh every 30s, portfolio snapshots every minute)
     startSnapshotLoops();
 
+    // Start settlement loop (closes resolved positions and credits payout)
+    startSettlementLoop();
+
     logger.info("Worker started successfully");
 
     // Graceful shutdown
@@ -87,7 +104,9 @@ async function main() {
         logger.info("Shutting down...");
         stopPolling();
         stopSnapshotLoops();
+        stopSettlementLoop();
         stopEnrichmentProcessor();
+        await stopFlushLoopGracefully(); // Flush any pending small trade buffer buckets
         await flushAllGroups(); // Flush any pending aggregation groups
         await flushPendingReconciles(); // Flush any pending reconcile batches
         await stopReconcileWorker();

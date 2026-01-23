@@ -42,10 +42,29 @@ export const GuardrailsSchema = z.object({
     maxDrawdownLimitBps: z.number().int().default(1200),
 });
 /**
- * Copy sizing configuration schema.
- * Controls how much to copy from each trade.
+ * Sizing mode for copy trading.
+ * - fixedRate: Use a fixed copy percentage (current behavior)
+ * - budgetedDynamic: Compute rate from budget / leader exposure
  */
-export const SizingSchema = z.object({
+export const SizingMode = {
+    FIXED_RATE: "fixedRate",
+    BUDGETED_DYNAMIC: "budgetedDynamic",
+};
+/**
+ * Budget enforcement mode for budgeted dynamic sizing.
+ * - hard: Strictly cap exposure at budget; skip/reduce trades that exceed
+ * - soft: Budget influences rate but doesn't hard-stop further exposure
+ */
+export const BudgetEnforcement = {
+    HARD: "hard",
+    SOFT: "soft",
+};
+/**
+ * Copy sizing configuration schema (base object).
+ * Use SizingSchemaBase.partial() for parsing partial configs from DB.
+ * Use SizingSchema for full validation with refinements.
+ */
+export const SizingSchemaBase = z.object({
     /** Copy percentage of their notional in bps (default: 100 = 1%) */
     copyPctNotionalBps: z.number().int().default(100),
     /** Minimum trade notional in micros (default: 5_000_000 = $5) */
@@ -54,6 +73,60 @@ export const SizingSchema = z.object({
     maxTradeNotionalMicros: z.number().int().default(250_000_000),
     /** Max trade as % of bankroll in bps (default: 75 = 0.75%) */
     maxTradeBankrollBps: z.number().int().default(75),
+    // ─── Budgeted Dynamic Sizing ───────────────────────────────────────────
+    /**
+     * Sizing mode: fixedRate (current behavior) or budgetedDynamic.
+     * Default: fixedRate
+     */
+    sizingMode: z
+        .enum([SizingMode.FIXED_RATE, SizingMode.BUDGETED_DYNAMIC])
+        .default(SizingMode.FIXED_RATE),
+    /**
+     * Global kill switch for budgeted dynamic sizing.
+     * When false, budgetedDynamic mode is disabled system-wide.
+     * This field is only read from GLOBAL config; per-user overrides are ignored.
+     * Default: false
+     */
+    budgetedDynamicEnabled: z.boolean().default(false),
+    /**
+     * Budget allocated to this leader in micros (e.g., 40_000_000 = $40).
+     * Used to compute effective copy rate: r = budget / leaderExposure.
+     * Default: 0 (must be set when using budgetedDynamic mode)
+     */
+    budgetUsdcMicros: z.number().int().min(0).default(0),
+    /**
+     * Minimum effective copy rate in bps (floor for r_u).
+     * Default: 0 (no floor)
+     */
+    budgetRMinBps: z.number().int().min(0).default(0),
+    /**
+     * Maximum effective copy rate in bps (ceiling for r_u).
+     * Default: 100 (1.00%) to match current default copy rate ceiling
+     */
+    budgetRMaxBps: z.number().int().min(0).default(100),
+    /**
+     * Budget enforcement mode: hard or soft.
+     * - hard: Strictly cap exposure at budget; skip/reduce trades that exceed
+     * - soft: Budget influences rate but doesn't hard-stop further exposure
+     * Default: hard
+     */
+    budgetEnforcement: z
+        .enum([BudgetEnforcement.HARD, BudgetEnforcement.SOFT])
+        .default(BudgetEnforcement.HARD),
+    /**
+     * Minimum leader trade notional in micros to copy.
+     * Leader trades below this size are skipped (useful for filtering whale spam).
+     * Default: 0 (disabled)
+     */
+    minLeaderTradeNotionalMicros: z.number().int().min(0).default(0),
+});
+/**
+ * Copy sizing configuration schema with validation refinements.
+ * Controls how much to copy from each trade.
+ */
+export const SizingSchema = SizingSchemaBase.refine((data) => data.budgetRMinBps <= data.budgetRMaxBps, {
+    message: "budgetRMinBps must be <= budgetRMaxBps",
+    path: ["budgetRMinBps"],
 });
 /**
  * System configuration schema.
@@ -69,4 +142,58 @@ export const SystemConfigSchema = z.object({
     backfillMinutes: z.number().int().default(15),
     /** Initial paper trading bankroll in micros (default: 10000_000_000 = $10,000) */
     initialBankrollMicros: z.number().int().default(10_000_000_000),
+});
+/**
+ * Netting mode for small trade buffering.
+ * - sameSideOnly: Buffer only same-side trades; opposite side flushes current bucket
+ * - netBuySell: Allow buys and sells to net within the same bucket (advanced)
+ */
+export const SmallTradeNettingMode = {
+    SAME_SIDE_ONLY: "sameSideOnly",
+    NET_BUY_SELL: "netBuySell",
+};
+/**
+ * Small trade buffering configuration schema.
+ * When enabled, buffers tiny copy trades and flushes them in batches.
+ * This reduces distortion from per-trade minimums and improves live execution.
+ *
+ * All monetary thresholds are in micros (6 decimal places).
+ */
+export const SmallTradeBufferingSchema = z.object({
+    /** Whether small trade buffering is enabled (default: false) */
+    enabled: z.boolean().default(false),
+    /**
+     * Trades with copy notional below this threshold are considered "small" and buffered.
+     * Default: 250_000 = $0.25
+     */
+    notionalThresholdMicros: z.number().int().min(0).default(250_000),
+    /**
+     * Minimum accumulated notional to trigger a flush.
+     * Default: 500_000 = $0.50
+     */
+    flushMinNotionalMicros: z.number().int().min(0).default(500_000),
+    /**
+     * Hard minimum notional to actually submit an order on flush.
+     * If buffered notional < this on flush, skip (don't submit order).
+     * Default: 100_000 = $0.10
+     */
+    minExecNotionalMicros: z.number().int().min(0).default(100_000),
+    /**
+     * Maximum time a bucket can exist before being flushed (ms).
+     * Default: 2500ms
+     */
+    maxBufferMs: z.number().int().min(100).default(2500),
+    /**
+     * If no new trades arrive for this duration, flush early (ms).
+     * Only flushes if accumulated >= minExecNotionalMicros.
+     * Default: 600ms
+     */
+    quietFlushMs: z.number().int().min(50).default(600),
+    /**
+     * Netting mode: how to handle opposite-side trades in the same bucket.
+     * Default: sameSideOnly
+     */
+    nettingMode: z
+        .enum([SmallTradeNettingMode.SAME_SIDE_ONLY, SmallTradeNettingMode.NET_BUY_SELL])
+        .default(SmallTradeNettingMode.SAME_SIDE_ONLY),
 });

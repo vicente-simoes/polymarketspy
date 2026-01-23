@@ -334,6 +334,74 @@ export async function GET(
             createdAt: attempt.createdAt.getTime()
         }))
 
+        // ─── BUDGETED DYNAMIC OBSERVABILITY ────────────────────────────────────
+        // Load effective sizing config (global + user overrides)
+        const [globalSizingRow, userSizingRow] = await Promise.all([
+            prisma.copySizingConfig.findFirst({
+                where: { scope: "GLOBAL", followedUserId: null },
+                orderBy: { updatedAt: "desc" }
+            }),
+            prisma.copySizingConfig.findFirst({
+                where: { scope: "GLOBAL", followedUserId: id },
+                orderBy: { updatedAt: "desc" }
+            })
+        ])
+
+        const globalSizing = (globalSizingRow?.configJson || {}) as Record<string, any>
+        const userSizing = (userSizingRow?.configJson || {}) as Record<string, any>
+
+        // Merge: global + user overrides (user takes precedence except budgetedDynamicEnabled)
+        const effectiveSizing: Record<string, any> = {
+            ...globalSizing,
+            ...userSizing,
+            // budgetedDynamicEnabled is always from global (per spec)
+            budgetedDynamicEnabled: globalSizing.budgetedDynamicEnabled ?? false
+        }
+
+        const budgetedDynamicEnabled = Boolean(effectiveSizing.budgetedDynamicEnabled)
+        const sizingMode = (effectiveSizing.sizingMode as string) ?? "fixedRate"
+        const budgetUsdcMicros = Number(effectiveSizing.budgetUsdcMicros ?? 0)
+        const budgetRMinBps = Number(effectiveSizing.budgetRMinBps ?? 0)
+        const budgetRMaxBps = Number(effectiveSizing.budgetRMaxBps ?? 100)
+        const budgetEnforcement = (effectiveSizing.budgetEnforcement as string) ?? "hard"
+
+        // Leader exposure from SHADOW_USER snapshot
+        const leaderExposureMicros = latestShadow
+            ? Number(latestShadow.exposureMicros)
+            : 0
+
+        // Current copy exposure from EXEC_GLOBAL snapshot
+        const currentCopyExposureMicros = latestExec
+            ? Number(latestExec.exposureMicros)
+            : 0
+
+        // Compute effective rate (only meaningful when budgeted dynamic is active)
+        let effectiveRateBps = 0
+        if (budgetedDynamicEnabled && sizingMode === "budgetedDynamic" && leaderExposureMicros > 0) {
+            // r = budget / leaderExposure, clamped to [rMin, rMax]
+            const rawRateBps = Math.floor((budgetUsdcMicros / leaderExposureMicros) * 10000)
+            effectiveRateBps = Math.max(budgetRMinBps, Math.min(budgetRMaxBps, rawRateBps))
+        } else if (budgetedDynamicEnabled && sizingMode === "budgetedDynamic" && leaderExposureMicros <= 0) {
+            // No exposure: use rMax (bounded behavior)
+            effectiveRateBps = budgetRMaxBps
+        }
+
+        // Headroom: budget - current copy exposure (only meaningful for HARD enforcement)
+        const headroomMicros = budgetUsdcMicros - currentCopyExposureMicros
+
+        const budgetedDynamic = {
+            enabled: budgetedDynamicEnabled,
+            sizingMode,
+            budgetUsd: budgetUsdcMicros / 1_000_000,
+            leaderExposureUsd: leaderExposureMicros / 1_000_000,
+            currentCopyExposureUsd: currentCopyExposureMicros / 1_000_000,
+            effectiveRatePct: effectiveRateBps / 100,
+            headroomUsd: headroomMicros / 1_000_000,
+            budgetEnforcement,
+            rMinPct: budgetRMinBps / 100,
+            rMaxPct: budgetRMaxBps / 100
+        }
+
         return NextResponse.json({
             ...user,
             metrics: {
@@ -370,7 +438,8 @@ export async function GET(
                 exec: formatPositions(execPositionsRaw)
             },
             recentTrades: recentTradesFormatted,
-            recentAttempts: recentAttemptsFormatted
+            recentAttempts: recentAttemptsFormatted,
+            budgetedDynamic
         })
     } catch (error) {
         console.error("Failed to fetch user details:", error)

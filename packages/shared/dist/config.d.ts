@@ -38,7 +38,6 @@ export declare const GuardrailsSchema: z.ZodObject<{
     maxDrawdownLimitBps: z.ZodDefault<z.ZodNumber>;
 }, "strip", z.ZodTypeAny, {
     maxWorseningVsTheirFillMicros: number;
-    maxBuyCostPerShareMicros?: number | undefined;
     maxOverMidMicros: number;
     maxSpreadMicros: number;
     minDepthMultiplierBps: number;
@@ -51,6 +50,7 @@ export declare const GuardrailsSchema: z.ZodObject<{
     dailyLossLimitBps: number;
     weeklyLossLimitBps: number;
     maxDrawdownLimitBps: number;
+    maxBuyCostPerShareMicros?: number | undefined;
 }, {
     maxWorseningVsTheirFillMicros?: number | undefined;
     maxBuyCostPerShareMicros?: number | undefined;
@@ -69,10 +69,31 @@ export declare const GuardrailsSchema: z.ZodObject<{
 }>;
 export type Guardrails = z.infer<typeof GuardrailsSchema>;
 /**
- * Copy sizing configuration schema.
- * Controls how much to copy from each trade.
+ * Sizing mode for copy trading.
+ * - fixedRate: Use a fixed copy percentage (current behavior)
+ * - budgetedDynamic: Compute rate from budget / leader exposure
  */
-export declare const SizingSchema: z.ZodObject<{
+export declare const SizingMode: {
+    readonly FIXED_RATE: "fixedRate";
+    readonly BUDGETED_DYNAMIC: "budgetedDynamic";
+};
+export type SizingModeType = (typeof SizingMode)[keyof typeof SizingMode];
+/**
+ * Budget enforcement mode for budgeted dynamic sizing.
+ * - hard: Strictly cap exposure at budget; skip/reduce trades that exceed
+ * - soft: Budget influences rate but doesn't hard-stop further exposure
+ */
+export declare const BudgetEnforcement: {
+    readonly HARD: "hard";
+    readonly SOFT: "soft";
+};
+export type BudgetEnforcementType = (typeof BudgetEnforcement)[keyof typeof BudgetEnforcement];
+/**
+ * Copy sizing configuration schema (base object).
+ * Use SizingSchemaBase.partial() for parsing partial configs from DB.
+ * Use SizingSchema for full validation with refinements.
+ */
+export declare const SizingSchemaBase: z.ZodObject<{
     /** Copy percentage of their notional in bps (default: 100 = 1%) */
     copyPctNotionalBps: z.ZodDefault<z.ZodNumber>;
     /** Minimum trade notional in micros (default: 5_000_000 = $5) */
@@ -81,18 +102,176 @@ export declare const SizingSchema: z.ZodObject<{
     maxTradeNotionalMicros: z.ZodDefault<z.ZodNumber>;
     /** Max trade as % of bankroll in bps (default: 75 = 0.75%) */
     maxTradeBankrollBps: z.ZodDefault<z.ZodNumber>;
+    /**
+     * Sizing mode: fixedRate (current behavior) or budgetedDynamic.
+     * Default: fixedRate
+     */
+    sizingMode: z.ZodDefault<z.ZodEnum<["fixedRate", "budgetedDynamic"]>>;
+    /**
+     * Global kill switch for budgeted dynamic sizing.
+     * When false, budgetedDynamic mode is disabled system-wide.
+     * This field is only read from GLOBAL config; per-user overrides are ignored.
+     * Default: false
+     */
+    budgetedDynamicEnabled: z.ZodDefault<z.ZodBoolean>;
+    /**
+     * Budget allocated to this leader in micros (e.g., 40_000_000 = $40).
+     * Used to compute effective copy rate: r = budget / leaderExposure.
+     * Default: 0 (must be set when using budgetedDynamic mode)
+     */
+    budgetUsdcMicros: z.ZodDefault<z.ZodNumber>;
+    /**
+     * Minimum effective copy rate in bps (floor for r_u).
+     * Default: 0 (no floor)
+     */
+    budgetRMinBps: z.ZodDefault<z.ZodNumber>;
+    /**
+     * Maximum effective copy rate in bps (ceiling for r_u).
+     * Default: 100 (1.00%) to match current default copy rate ceiling
+     */
+    budgetRMaxBps: z.ZodDefault<z.ZodNumber>;
+    /**
+     * Budget enforcement mode: hard or soft.
+     * - hard: Strictly cap exposure at budget; skip/reduce trades that exceed
+     * - soft: Budget influences rate but doesn't hard-stop further exposure
+     * Default: hard
+     */
+    budgetEnforcement: z.ZodDefault<z.ZodEnum<["hard", "soft"]>>;
+    /**
+     * Minimum leader trade notional in micros to copy.
+     * Leader trades below this size are skipped (useful for filtering whale spam).
+     * Default: 0 (disabled)
+     */
+    minLeaderTradeNotionalMicros: z.ZodDefault<z.ZodNumber>;
 }, "strip", z.ZodTypeAny, {
     copyPctNotionalBps: number;
     minTradeNotionalMicros: number;
     maxTradeNotionalMicros: number;
     maxTradeBankrollBps: number;
+    sizingMode: "fixedRate" | "budgetedDynamic";
+    budgetedDynamicEnabled: boolean;
+    budgetUsdcMicros: number;
+    budgetRMinBps: number;
+    budgetRMaxBps: number;
+    budgetEnforcement: "hard" | "soft";
+    minLeaderTradeNotionalMicros: number;
 }, {
     copyPctNotionalBps?: number | undefined;
     minTradeNotionalMicros?: number | undefined;
     maxTradeNotionalMicros?: number | undefined;
     maxTradeBankrollBps?: number | undefined;
+    sizingMode?: "fixedRate" | "budgetedDynamic" | undefined;
+    budgetedDynamicEnabled?: boolean | undefined;
+    budgetUsdcMicros?: number | undefined;
+    budgetRMinBps?: number | undefined;
+    budgetRMaxBps?: number | undefined;
+    budgetEnforcement?: "hard" | "soft" | undefined;
+    minLeaderTradeNotionalMicros?: number | undefined;
 }>;
-export type Sizing = z.infer<typeof SizingSchema>;
+/**
+ * Copy sizing configuration schema with validation refinements.
+ * Controls how much to copy from each trade.
+ */
+export declare const SizingSchema: z.ZodEffects<z.ZodObject<{
+    /** Copy percentage of their notional in bps (default: 100 = 1%) */
+    copyPctNotionalBps: z.ZodDefault<z.ZodNumber>;
+    /** Minimum trade notional in micros (default: 5_000_000 = $5) */
+    minTradeNotionalMicros: z.ZodDefault<z.ZodNumber>;
+    /** Maximum trade notional in micros (default: 250_000_000 = $250) */
+    maxTradeNotionalMicros: z.ZodDefault<z.ZodNumber>;
+    /** Max trade as % of bankroll in bps (default: 75 = 0.75%) */
+    maxTradeBankrollBps: z.ZodDefault<z.ZodNumber>;
+    /**
+     * Sizing mode: fixedRate (current behavior) or budgetedDynamic.
+     * Default: fixedRate
+     */
+    sizingMode: z.ZodDefault<z.ZodEnum<["fixedRate", "budgetedDynamic"]>>;
+    /**
+     * Global kill switch for budgeted dynamic sizing.
+     * When false, budgetedDynamic mode is disabled system-wide.
+     * This field is only read from GLOBAL config; per-user overrides are ignored.
+     * Default: false
+     */
+    budgetedDynamicEnabled: z.ZodDefault<z.ZodBoolean>;
+    /**
+     * Budget allocated to this leader in micros (e.g., 40_000_000 = $40).
+     * Used to compute effective copy rate: r = budget / leaderExposure.
+     * Default: 0 (must be set when using budgetedDynamic mode)
+     */
+    budgetUsdcMicros: z.ZodDefault<z.ZodNumber>;
+    /**
+     * Minimum effective copy rate in bps (floor for r_u).
+     * Default: 0 (no floor)
+     */
+    budgetRMinBps: z.ZodDefault<z.ZodNumber>;
+    /**
+     * Maximum effective copy rate in bps (ceiling for r_u).
+     * Default: 100 (1.00%) to match current default copy rate ceiling
+     */
+    budgetRMaxBps: z.ZodDefault<z.ZodNumber>;
+    /**
+     * Budget enforcement mode: hard or soft.
+     * - hard: Strictly cap exposure at budget; skip/reduce trades that exceed
+     * - soft: Budget influences rate but doesn't hard-stop further exposure
+     * Default: hard
+     */
+    budgetEnforcement: z.ZodDefault<z.ZodEnum<["hard", "soft"]>>;
+    /**
+     * Minimum leader trade notional in micros to copy.
+     * Leader trades below this size are skipped (useful for filtering whale spam).
+     * Default: 0 (disabled)
+     */
+    minLeaderTradeNotionalMicros: z.ZodDefault<z.ZodNumber>;
+}, "strip", z.ZodTypeAny, {
+    copyPctNotionalBps: number;
+    minTradeNotionalMicros: number;
+    maxTradeNotionalMicros: number;
+    maxTradeBankrollBps: number;
+    sizingMode: "fixedRate" | "budgetedDynamic";
+    budgetedDynamicEnabled: boolean;
+    budgetUsdcMicros: number;
+    budgetRMinBps: number;
+    budgetRMaxBps: number;
+    budgetEnforcement: "hard" | "soft";
+    minLeaderTradeNotionalMicros: number;
+}, {
+    copyPctNotionalBps?: number | undefined;
+    minTradeNotionalMicros?: number | undefined;
+    maxTradeNotionalMicros?: number | undefined;
+    maxTradeBankrollBps?: number | undefined;
+    sizingMode?: "fixedRate" | "budgetedDynamic" | undefined;
+    budgetedDynamicEnabled?: boolean | undefined;
+    budgetUsdcMicros?: number | undefined;
+    budgetRMinBps?: number | undefined;
+    budgetRMaxBps?: number | undefined;
+    budgetEnforcement?: "hard" | "soft" | undefined;
+    minLeaderTradeNotionalMicros?: number | undefined;
+}>, {
+    copyPctNotionalBps: number;
+    minTradeNotionalMicros: number;
+    maxTradeNotionalMicros: number;
+    maxTradeBankrollBps: number;
+    sizingMode: "fixedRate" | "budgetedDynamic";
+    budgetedDynamicEnabled: boolean;
+    budgetUsdcMicros: number;
+    budgetRMinBps: number;
+    budgetRMaxBps: number;
+    budgetEnforcement: "hard" | "soft";
+    minLeaderTradeNotionalMicros: number;
+}, {
+    copyPctNotionalBps?: number | undefined;
+    minTradeNotionalMicros?: number | undefined;
+    maxTradeNotionalMicros?: number | undefined;
+    maxTradeBankrollBps?: number | undefined;
+    sizingMode?: "fixedRate" | "budgetedDynamic" | undefined;
+    budgetedDynamicEnabled?: boolean | undefined;
+    budgetUsdcMicros?: number | undefined;
+    budgetRMinBps?: number | undefined;
+    budgetRMaxBps?: number | undefined;
+    budgetEnforcement?: "hard" | "soft" | undefined;
+    minLeaderTradeNotionalMicros?: number | undefined;
+}>;
+export type Sizing = z.infer<typeof SizingSchemaBase>;
 /**
  * System configuration schema.
  */
@@ -121,3 +300,73 @@ export declare const SystemConfigSchema: z.ZodObject<{
     initialBankrollMicros?: number | undefined;
 }>;
 export type SystemConfig = z.infer<typeof SystemConfigSchema>;
+/**
+ * Netting mode for small trade buffering.
+ * - sameSideOnly: Buffer only same-side trades; opposite side flushes current bucket
+ * - netBuySell: Allow buys and sells to net within the same bucket (advanced)
+ */
+export declare const SmallTradeNettingMode: {
+    readonly SAME_SIDE_ONLY: "sameSideOnly";
+    readonly NET_BUY_SELL: "netBuySell";
+};
+export type SmallTradeNettingModeType = (typeof SmallTradeNettingMode)[keyof typeof SmallTradeNettingMode];
+/**
+ * Small trade buffering configuration schema.
+ * When enabled, buffers tiny copy trades and flushes them in batches.
+ * This reduces distortion from per-trade minimums and improves live execution.
+ *
+ * All monetary thresholds are in micros (6 decimal places).
+ */
+export declare const SmallTradeBufferingSchema: z.ZodObject<{
+    /** Whether small trade buffering is enabled (default: false) */
+    enabled: z.ZodDefault<z.ZodBoolean>;
+    /**
+     * Trades with copy notional below this threshold are considered "small" and buffered.
+     * Default: 250_000 = $0.25
+     */
+    notionalThresholdMicros: z.ZodDefault<z.ZodNumber>;
+    /**
+     * Minimum accumulated notional to trigger a flush.
+     * Default: 500_000 = $0.50
+     */
+    flushMinNotionalMicros: z.ZodDefault<z.ZodNumber>;
+    /**
+     * Hard minimum notional to actually submit an order on flush.
+     * If buffered notional < this on flush, skip (don't submit order).
+     * Default: 100_000 = $0.10
+     */
+    minExecNotionalMicros: z.ZodDefault<z.ZodNumber>;
+    /**
+     * Maximum time a bucket can exist before being flushed (ms).
+     * Default: 2500ms
+     */
+    maxBufferMs: z.ZodDefault<z.ZodNumber>;
+    /**
+     * If no new trades arrive for this duration, flush early (ms).
+     * Only flushes if accumulated >= minExecNotionalMicros.
+     * Default: 600ms
+     */
+    quietFlushMs: z.ZodDefault<z.ZodNumber>;
+    /**
+     * Netting mode: how to handle opposite-side trades in the same bucket.
+     * Default: sameSideOnly
+     */
+    nettingMode: z.ZodDefault<z.ZodEnum<["sameSideOnly", "netBuySell"]>>;
+}, "strip", z.ZodTypeAny, {
+    enabled: boolean;
+    notionalThresholdMicros: number;
+    flushMinNotionalMicros: number;
+    minExecNotionalMicros: number;
+    maxBufferMs: number;
+    quietFlushMs: number;
+    nettingMode: "sameSideOnly" | "netBuySell";
+}, {
+    enabled?: boolean | undefined;
+    notionalThresholdMicros?: number | undefined;
+    flushMinNotionalMicros?: number | undefined;
+    minExecNotionalMicros?: number | undefined;
+    maxBufferMs?: number | undefined;
+    quietFlushMs?: number | undefined;
+    nettingMode?: "sameSideOnly" | "netBuySell" | undefined;
+}>;
+export type SmallTradeBuffering = z.infer<typeof SmallTradeBufferingSchema>;

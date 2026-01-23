@@ -8,7 +8,7 @@
 import { PortfolioScope } from "@prisma/client";
 import { createChildLogger } from "../log/logger.js";
 import { createWorker, QUEUE_NAMES } from "../queue/queues.js";
-import { executeCopyAttempt } from "./executor.js";
+import { executeCopyAttempt, type CopyAttemptOptions } from "./executor.js";
 import { deserializeEventGroup } from "./types.js";
 import type { CopyAttemptJobData } from "./types.js";
 
@@ -25,11 +25,12 @@ const logger = createChildLogger({ module: "copy-workers" });
 export const copyAttemptGlobalWorker = createWorker<CopyAttemptJobData>(
     QUEUE_NAMES.COPY_ATTEMPT_GLOBAL,
     async (job) => {
-        const { portfolioScope } = job.data;
+        const { portfolioScope, sourceType, bufferedTradeCount } = job.data;
         const group = deserializeEventGroup(job.data.group);
         const log = logger.child({
             groupKey: group.groupKey,
             scope: portfolioScope,
+            sourceType,
             jobId: job.id,
         });
 
@@ -40,8 +41,14 @@ export const copyAttemptGlobalWorker = createWorker<CopyAttemptJobData>(
 
         log.debug("Processing global copy attempt");
 
+        // Build options from job data
+        const options: CopyAttemptOptions = {
+            sourceType,
+            bufferedTradeCount,
+        };
+
         try {
-            const result = await executeCopyAttempt(group, PortfolioScope.EXEC_GLOBAL);
+            const result = await executeCopyAttempt(group, PortfolioScope.EXEC_GLOBAL, options);
 
             log.info(
                 {

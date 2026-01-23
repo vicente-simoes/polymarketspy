@@ -33,5 +33,13 @@ export declare const ReasonCodes: {
     readonly USER_DISABLED: "USER_DISABLED";
     /** Market is blacklisted */
     readonly MARKET_BLACKLISTED: "MARKET_BLACKLISTED";
+    /** Trade was buffered (not yet flushed) */
+    readonly BUFFERED: "BUFFERED";
+    /** Buffered notional below min exec threshold on flush */
+    readonly BUFFER_FLUSH_BELOW_MIN_EXEC: "BUFFER_FLUSH_BELOW_MIN_EXEC";
+    /** Leader trade notional is below configured minimum (filtered) */
+    readonly LEADER_TRADE_BELOW_MIN_NOTIONAL: "LEADER_TRADE_BELOW_MIN_NOTIONAL";
+    /** HARD budget enforcement: exposure would exceed budget allocation */
+    readonly BUDGET_HARD_CAP_EXCEEDED: "BUDGET_HARD_CAP_EXCEEDED";
 };
 export type ReasonCode = (typeof ReasonCodes)[keyof typeof ReasonCodes];

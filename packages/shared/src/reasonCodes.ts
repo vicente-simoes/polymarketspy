@@ -33,6 +33,18 @@ export const ReasonCodes = {
     USER_DISABLED: "USER_DISABLED",
     /** Market is blacklisted */
     MARKET_BLACKLISTED: "MARKET_BLACKLISTED",
+
+    // Small trade buffering reason codes
+    /** Trade was buffered (not yet flushed) */
+    BUFFERED: "BUFFERED",
+    /** Buffered notional below min exec threshold on flush */
+    BUFFER_FLUSH_BELOW_MIN_EXEC: "BUFFER_FLUSH_BELOW_MIN_EXEC",
+
+    // Budgeted dynamic sizing reason codes
+    /** Leader trade notional is below configured minimum (filtered) */
+    LEADER_TRADE_BELOW_MIN_NOTIONAL: "LEADER_TRADE_BELOW_MIN_NOTIONAL",
+    /** HARD budget enforcement: exposure would exceed budget allocation */
+    BUDGET_HARD_CAP_EXCEEDED: "BUDGET_HARD_CAP_EXCEEDED",
 } as const;
 
 export type ReasonCode = (typeof ReasonCodes)[keyof typeof ReasonCodes];

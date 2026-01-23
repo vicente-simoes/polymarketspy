@@ -95,6 +95,18 @@ interface UserDetailResponse {
         theirReferencePrice: number
         createdAt: number
     }[]
+    budgetedDynamic: {
+        enabled: boolean
+        sizingMode: string
+        budgetUsd: number
+        leaderExposureUsd: number
+        currentCopyExposureUsd: number
+        effectiveRatePct: number
+        headroomUsd: number
+        budgetEnforcement: string
+        rMinPct: number
+        rMaxPct: number
+    }
 }
 
 const formatCurrency = (value: number) =>
@@ -505,6 +517,67 @@ export default function UserDetailPage({ params }: { params: Promise<{ id: strin
                                         </div>
                                     </div>
                                 </div>
+
+                                {user.budgetedDynamic.enabled && user.budgetedDynamic.sizingMode === "budgetedDynamic" && (
+                                    <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
+                                        <div className="flex items-center gap-2 text-sm text-[#6f6f6f]">
+                                            <TrendingUp className="h-4 w-4 text-[#86efac]" />
+                                            Budgeted Dynamic Sizing
+                                        </div>
+                                        <div className="mt-4 grid grid-cols-2 md:grid-cols-5 gap-4">
+                                            <div className="rounded-xl border border-[#27272A] bg-[#111111] p-4">
+                                                <div className="text-xs uppercase tracking-wider text-[#6f6f6f]">Budget</div>
+                                                <div className="mt-1 text-xl font-semibold text-white">
+                                                    {formatCurrency(user.budgetedDynamic.budgetUsd)}
+                                                </div>
+                                                <div className="mt-1 text-xs text-[#6f6f6f]">
+                                                    Allocated for this leader
+                                                </div>
+                                            </div>
+                                            <div className="rounded-xl border border-[#27272A] bg-[#111111] p-4">
+                                                <div className="text-xs uppercase tracking-wider text-[#6f6f6f]">Leader Exposure</div>
+                                                <div className="mt-1 text-xl font-semibold text-white">
+                                                    {formatCurrency(user.budgetedDynamic.leaderExposureUsd)}
+                                                </div>
+                                                <div className="mt-1 text-xs text-[#6f6f6f]">
+                                                    Their total exposure
+                                                </div>
+                                            </div>
+                                            <div className="rounded-xl border border-[#27272A] bg-[#111111] p-4">
+                                                <div className="text-xs uppercase tracking-wider text-[#6f6f6f]">Your Copy Exposure</div>
+                                                <div className="mt-1 text-xl font-semibold text-white">
+                                                    {formatCurrency(user.budgetedDynamic.currentCopyExposureUsd)}
+                                                </div>
+                                                <div className="mt-1 text-xs text-[#6f6f6f]">
+                                                    Your exposure from this leader
+                                                </div>
+                                            </div>
+                                            <div className="rounded-xl border border-[#27272A] bg-[#111111] p-4">
+                                                <div className="text-xs uppercase tracking-wider text-[#6f6f6f]">Effective Rate</div>
+                                                <div className="mt-1 text-xl font-semibold text-[#86efac]">
+                                                    {user.budgetedDynamic.effectiveRatePct.toFixed(2)}%
+                                                </div>
+                                                <div className="mt-1 text-xs text-[#6f6f6f]">
+                                                    r = budget / exposure (clamped {user.budgetedDynamic.rMinPct.toFixed(1)}-{user.budgetedDynamic.rMaxPct.toFixed(1)}%)
+                                                </div>
+                                            </div>
+                                            <div className="rounded-xl border border-[#27272A] bg-[#111111] p-4">
+                                                <div className="text-xs uppercase tracking-wider text-[#6f6f6f]">Headroom</div>
+                                                <div className={`mt-1 text-xl font-semibold ${
+                                                    user.budgetedDynamic.headroomUsd >= 0 ? "text-[#86efac]" : "text-red-400"
+                                                }`}>
+                                                    {formatCurrency(user.budgetedDynamic.headroomUsd)}
+                                                </div>
+                                                <div className="mt-1 text-xs text-[#6f6f6f]">
+                                                    {user.budgetedDynamic.budgetEnforcement === "hard"
+                                                        ? "Budget - exposure (HARD cap)"
+                                                        : "Budget - exposure (SOFT)"
+                                                    }
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
 
                                 <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
                                     <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
