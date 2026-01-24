@@ -15,7 +15,7 @@ export function PerformanceChart() {
   const hasData = equityCurve.length > 0
 
   // Fallback if no data yet (e.g. fresh DB)
-  if (isLoading && !hasData) return <div className="h-[400px] flex items-center justify-center text-gray-400 bg-[#0D0D0D] rounded-2xl">Loading chart...</div>
+  if (isLoading && !hasData) return <div className="h-[260px] sm:h-[320px] lg:h-[400px] flex items-center justify-center text-gray-400 bg-[#0D0D0D] rounded-2xl">Loading chart...</div>
 
   // Calculate domain for Y axis to look good
   const values = equityCurve.map((d: any) => d.value)
@@ -34,7 +34,7 @@ export function PerformanceChart() {
   }
 
   return (
-    <div className="flex flex-col gap-6 p-6 bg-[#0D0D0D] rounded-2xl">
+    <div className="flex flex-col gap-6 p-4 md:p-6 bg-[#0D0D0D] rounded-2xl">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 md:gap-2 lg:gap-4 flex-wrap">
         <div className="flex items-center gap-3">
           <h2 className="text-xl font-medium text-white">Performance</h2>
@@ -47,12 +47,12 @@ export function PerformanceChart() {
         </div>
 
         <div className="flex items-center gap-4 md:gap-2 lg:gap-4">
-          <div className="flex items-center bg-[#1A1A1A] rounded-lg p-1">
+          <div className="flex items-center bg-[#1A1A1A] rounded-lg p-1 max-w-full overflow-x-auto no-scrollbar">
             {['1H', '1D', '1W', '1M', 'ALL'].map((period) => (
               <button
                 key={period}
                 onClick={() => setTimeRange(period)}
-                className={`px-3 md:px-2 lg:px-3 py-1 text-sm md:text-xs lg:text-sm rounded-md transition-colors ${timeRange === period
+                className={`px-3 md:px-2 lg:px-3 py-1 text-sm md:text-xs lg:text-sm rounded-md transition-colors shrink-0 ${timeRange === period
                   ? 'bg-[#2A2A2A] text-white shadow-sm'
                   : 'text-gray-400 hover:text-white'
                   }`}
@@ -73,7 +73,7 @@ export function PerformanceChart() {
         </div>
       </div>
 
-      <div className="h-[400px] w-full">
+      <div className="h-[260px] sm:h-[320px] lg:h-[400px] w-full">
         {hasData ? (
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={equityCurve}>

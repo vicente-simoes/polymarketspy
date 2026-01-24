@@ -7,16 +7,16 @@ import { Header } from "@/components/header"
 
 export default function Dashboard() {
   return (
-    <div className="relative h-screen w-full bg-black text-white overflow-hidden">
+    <div className="relative w-full bg-black text-white overflow-hidden min-h-dvh md:h-screen">
       <Header />
 
       {/* Main Scrollable Area */}
       <div className="h-full overflow-y-auto no-scrollbar">
-        <main className="flex gap-6 p-6 pt-24 min-h-full">
+        <main className="flex flex-col md:flex-row gap-4 md:gap-6 p-4 md:p-6 pt-20 md:pt-24 min-h-full">
           <Sidebar />
 
           {/* Main Content Container */}
-          <div className="flex-1 flex flex-col gap-6 min-w-0">
+          <div className="flex-1 flex flex-col gap-4 md:gap-6 min-w-0">
             <DashboardMetrics />
             <PerformanceChart />
             <TopPerformers />

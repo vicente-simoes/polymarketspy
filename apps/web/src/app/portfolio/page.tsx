@@ -4,6 +4,7 @@ import { Sidebar } from "@/components/sidebar"
 import { Header } from "@/components/header"
 import useSWR from "swr"
 import { fetcher } from "@/lib/fetcher"
+import { useRouter } from "next/navigation"
 import {
     Bar,
     BarChart,
@@ -121,6 +122,7 @@ function ProgressStat({
 }
 
 export default function PortfolioPage() {
+    const router = useRouter()
     const { data, error, isLoading } = useSWR<GlobalPortfolioResponse>(
         "/api/portfolio/global",
         fetcher,
@@ -149,16 +151,16 @@ export default function PortfolioPage() {
         : []
 
     return (
-        <div className="relative h-screen w-full bg-black text-white overflow-hidden">
+        <div className="relative w-full bg-black text-white overflow-hidden min-h-dvh md:h-screen">
             <Header />
             <div className="h-full overflow-y-auto no-scrollbar">
-                <main className="flex gap-6 p-6 pt-24 min-h-full">
+                <main className="flex flex-col md:flex-row gap-4 md:gap-6 p-4 md:p-6 pt-20 md:pt-24 min-h-full">
                     <Sidebar />
-                    <div className="flex-1 flex flex-col gap-6 min-w-0">
+                    <div className="flex-1 flex flex-col gap-4 md:gap-6 min-w-0">
                         <div className="flex flex-wrap items-center justify-between gap-4">
                             <div>
                                 <p className="text-sm text-[#6f6f6f]">Global Portfolio</p>
-                                <h1 className="text-3xl font-bold text-white">Executable Portfolio</h1>
+                                <h1 className="text-2xl md:text-3xl font-bold text-white">Executable Portfolio</h1>
                             </div>
                             <div className="flex items-center gap-2 rounded-full border border-[#27272A] bg-[#111111] px-4 py-2 text-sm text-[#cfcfcf]">
                                 <Activity className="h-4 w-4 text-[#86efac]" />
@@ -339,9 +341,86 @@ export default function PortfolioPage() {
                                     </div>
                                 </div>
 
-                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
+                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-4 md:p-6">
                                     <div className="text-sm text-[#6f6f6f]">Open Positions</div>
-                                    <div className="mt-4 overflow-x-auto">
+                                    <div className="mt-4 md:hidden flex flex-col gap-3">
+                                        {sortedPositions.length > 0 ? (
+                                            sortedPositions.map((position) => {
+                                                const marketValue = position.marketValue ?? position.invested
+                                                const clickable = Boolean(position.assetId)
+                                                return (
+                                                    <div
+                                                        key={`${position.assetId ?? "unknown"}-${position.marketId ?? "market"}`}
+                                                        className={`rounded-2xl border border-[#27272A] bg-[#111111] p-4 ${clickable ? "cursor-pointer hover:bg-[#1A1A1A]" : ""}`}
+                                                        onClick={() => {
+                                                            if (position.assetId) {
+                                                                router.push(`/portfolio/positions/${encodeURIComponent(position.assetId)}`)
+                                                            }
+                                                        }}
+                                                        onKeyDown={(event) => {
+                                                            if (!position.assetId) return
+                                                            if (event.key === "Enter" || event.key === " ") {
+                                                                event.preventDefault()
+                                                                router.push(`/portfolio/positions/${encodeURIComponent(position.assetId)}`)
+                                                            }
+                                                        }}
+                                                        role={position.assetId ? "link" : undefined}
+                                                        tabIndex={position.assetId ? 0 : undefined}
+                                                    >
+                                                        <div className="text-sm font-medium text-white">
+                                                            {position.marketTitle}
+                                                        </div>
+                                                        <div className="mt-0.5 text-xs text-[#6f6f6f]">
+                                                            {position.outcome}
+                                                        </div>
+
+                                                        <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
+                                                            <div className="rounded-xl border border-[#1F1F1F] bg-[#0D0D0D] p-3">
+                                                                <div className="text-[#6f6f6f] uppercase tracking-wider">
+                                                                    Value
+                                                                </div>
+                                                                <div className="mt-1 text-white font-mono">
+                                                                    {formatCurrency(marketValue)}
+                                                                </div>
+                                                            </div>
+                                                            <div className="rounded-xl border border-[#1F1F1F] bg-[#0D0D0D] p-3">
+                                                                <div className="text-[#6f6f6f] uppercase tracking-wider">
+                                                                    Invested
+                                                                </div>
+                                                                <div className="mt-1 text-white font-mono">
+                                                                    {formatCurrency(position.invested)}
+                                                                </div>
+                                                            </div>
+                                                            <div className="rounded-xl border border-[#1F1F1F] bg-[#0D0D0D] p-3">
+                                                                <div className="text-[#6f6f6f] uppercase tracking-wider">
+                                                                    Shares
+                                                                </div>
+                                                                <div className="mt-1 text-white font-mono">
+                                                                    {position.shares.toFixed(2)}
+                                                                </div>
+                                                            </div>
+                                                            <div className="rounded-xl border border-[#1F1F1F] bg-[#0D0D0D] p-3">
+                                                                <div className="text-[#6f6f6f] uppercase tracking-wider">
+                                                                    Mark
+                                                                </div>
+                                                                <div className="mt-1 text-white font-mono">
+                                                                    {position.markPrice !== null
+                                                                        ? position.markPrice.toFixed(3)
+                                                                        : "--"}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                )
+                                            })
+                                        ) : (
+                                            <div className="rounded-2xl border border-[#27272A] bg-[#111111] p-6 text-center text-[#6f6f6f]">
+                                                No open positions
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    <div className="mt-4 hidden md:block overflow-x-auto">
                                         <table className="w-full text-sm">
                                             <thead>
                                                 <tr className="text-[#6f6f6f] border-b border-[#27272A]">
@@ -360,7 +439,21 @@ export default function PortfolioPage() {
                                                         return (
                                                             <tr
                                                                 key={`${position.assetId ?? "unknown"}-${position.marketId ?? "market"}`}
-                                                                className="border-b border-[#1A1A1A] last:border-0"
+                                                                className={`border-b border-[#1A1A1A] last:border-0 ${position.assetId ? "cursor-pointer hover:bg-[#111111]" : ""}`}
+                                                                onClick={() => {
+                                                                    if (position.assetId) {
+                                                                        router.push(`/portfolio/positions/${encodeURIComponent(position.assetId)}`)
+                                                                    }
+                                                                }}
+                                                                onKeyDown={(event) => {
+                                                                    if (!position.assetId) return
+                                                                    if (event.key === "Enter" || event.key === " ") {
+                                                                        event.preventDefault()
+                                                                        router.push(`/portfolio/positions/${encodeURIComponent(position.assetId)}`)
+                                                                    }
+                                                                }}
+                                                                role={position.assetId ? "link" : undefined}
+                                                                tabIndex={position.assetId ? 0 : undefined}
                                                             >
                                                                 <td className="py-3 text-white">
                                                                     <div className="font-medium">

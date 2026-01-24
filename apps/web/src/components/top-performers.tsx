@@ -15,10 +15,10 @@ export function TopPerformers() {
     return (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* Top Positions */}
-            <div className="bg-[#0D0D0D] rounded-2xl p-6">
+            <div className="bg-[#0D0D0D] rounded-2xl p-4 md:p-6">
                 <div className="flex items-center gap-3 mb-4">
                     <Trophy className="h-5 w-5 text-yellow-500" />
-                    <h3 className="text-xl font-medium text-white">Top Positions (Unrealized)</h3>
+                    <h3 className="text-lg md:text-xl font-medium text-white">Top Positions (Unrealized)</h3>
                 </div>
 
                 <div className="overflow-x-auto">
@@ -57,10 +57,10 @@ export function TopPerformers() {
             </div>
 
             {/* Top Users (Mock/Placeholder for now until API expanded) */}
-            <div className="bg-[#0D0D0D] rounded-2xl p-6">
+            <div className="bg-[#0D0D0D] rounded-2xl p-4 md:p-6">
                 <div className="flex items-center gap-3 mb-4">
                     <TrendingUp className="h-5 w-5 text-blue-500" />
-                    <h3 className="text-xl font-medium text-white">Top Users</h3>
+                    <h3 className="text-lg md:text-xl font-medium text-white">Top Users</h3>
                 </div>
 
                 <div className="overflow-x-auto">

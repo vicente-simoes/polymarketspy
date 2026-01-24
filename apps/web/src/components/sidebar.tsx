@@ -2,19 +2,10 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Blocks, Users, PieChart, Activity, ClipboardList, ShoppingCart, Settings, Server, LogOut } from 'lucide-react'
+import { LogOut } from 'lucide-react'
 import { signOut } from 'next-auth/react'
 
-const navItems = [
-  { href: '/', label: 'DASHBOARD', icon: Blocks },
-  { href: '/users', label: 'FOLLOWED USERS', icon: Users },
-  { href: '/portfolio', label: 'GLOBAL PORTFOLIO', icon: PieChart },
-  { href: '/trades', label: 'TRADES', icon: Activity },
-  { href: '/copy-attempts', label: 'COPY ATTEMPTS', icon: ClipboardList },
-  { href: '/markets', label: 'MARKETS', icon: ShoppingCart },
-  { href: '/config', label: 'CONFIG', icon: Settings },
-  { href: '/status', label: 'SYSTEM STATUS', icon: Server },
-]
+import { navItems } from "@/components/nav-items"
 
 export function Sidebar() {
   const pathname = usePathname()
@@ -41,7 +32,7 @@ export function Sidebar() {
 
       <div className="mt-auto pt-8 border-t border-[#1F1F1F] flex flex-col gap-8">
         <button
-          onClick={() => signOut()}
+          onClick={() => signOut({ callbackUrl: "/" })}
           className="flex items-center gap-4 text-[#919191] hover:text-[#E7E7E7] transition-colors cursor-pointer w-full text-left"
         >
           <LogOut className="h-6 w-6" />

@@ -236,25 +236,25 @@ export default function UserDetailPage({ params }: { params: Promise<{ id: strin
     }
 
     return (
-        <div className="relative h-screen w-full bg-black text-white overflow-hidden">
+        <div className="relative w-full bg-black text-white overflow-hidden min-h-dvh md:h-screen">
             <Header />
             <div className="h-full overflow-y-auto no-scrollbar">
-                <main className="flex gap-6 p-6 pt-24 min-h-full">
+                <main className="flex flex-col md:flex-row gap-4 md:gap-6 p-4 md:p-6 pt-20 md:pt-24 min-h-full">
                     <Sidebar />
-                    <div className="flex-1 flex flex-col gap-6 min-w-0">
-                        <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div className="flex-1 flex flex-col gap-4 md:gap-6 min-w-0">
+                        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
                             <div>
                                 <p className="text-sm text-[#6f6f6f]">Followed Users / Detail</p>
-                                <h1 className="text-3xl font-bold text-white">
+                                <h1 className="text-2xl md:text-3xl font-bold text-white">
                                     {user?.label ?? "User Detail"}
                                 </h1>
                             </div>
-                            <div className="flex items-center gap-3">
+                            <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                                 {user ? (
                                     <Link
                                         href={`https://polymarket.com/@${user.label}`}
                                         target="_blank"
-                                        className="inline-flex items-center gap-2 rounded-full border border-[#27272A] bg-[#111111] px-4 py-2 text-sm text-[#cfcfcf] hover:text-white"
+                                        className="inline-flex items-center justify-center gap-2 rounded-full border border-[#27272A] bg-[#111111] px-4 py-2 text-sm text-[#cfcfcf] hover:text-white"
                                     >
                                         View on Polymarket
                                         <ExternalLink className="h-4 w-4" />
@@ -262,7 +262,7 @@ export default function UserDetailPage({ params }: { params: Promise<{ id: strin
                                 ) : null}
                                 <Link
                                     href="/users"
-                                    className="inline-flex items-center gap-2 rounded-full border border-[#27272A] bg-[#111111] px-4 py-2 text-sm text-[#cfcfcf] hover:bg-[#1A1A1A] hover:text-white"
+                                    className="inline-flex items-center justify-center gap-2 rounded-full border border-[#27272A] bg-[#111111] px-4 py-2 text-sm text-[#cfcfcf] hover:bg-[#1A1A1A] hover:text-white"
                                 >
                                     <ArrowLeft className="h-4 w-4" />
                                     Back to Users
@@ -311,7 +311,7 @@ export default function UserDetailPage({ params }: { params: Promise<{ id: strin
                                             </div>
                                         </div>
 
-                                        <div className="mt-6 grid grid-cols-2 gap-4 text-sm">
+                                        <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
                                             <div className="text-[#6f6f6f]">
                                                 Proxies
                                                 <div className="text-white text-lg font-semibold">
@@ -341,7 +341,7 @@ export default function UserDetailPage({ params }: { params: Promise<{ id: strin
                                         </div>
                                     </div>
 
-                                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
                                         <MetricTile
                                             label="Shadow Equity"
                                             value={formatCurrency(metrics?.shadowEquity ?? 0)}
@@ -370,7 +370,7 @@ export default function UserDetailPage({ params }: { params: Promise<{ id: strin
                                             <TrendingUp className="h-4 w-4 text-[#86efac]" />
                                             Shadow vs Executable Equity
                                         </div>
-                                        <div className="mt-4 h-[320px]">
+                                        <div className="mt-4 h-[260px] sm:h-[320px]">
                                             {equityCurve.length > 0 ? (
                                                 <ResponsiveContainer width="100%" height="100%">
                                                     <LineChart data={equityCurve}>

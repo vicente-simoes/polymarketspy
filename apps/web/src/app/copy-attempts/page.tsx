@@ -138,15 +138,15 @@ export default function CopyAttemptsPage() {
     }
 
     return (
-        <div className="relative h-screen w-full bg-black text-white overflow-hidden">
+        <div className="relative w-full bg-black text-white overflow-hidden min-h-dvh md:h-screen">
             <Header />
             <div className="h-full overflow-y-auto no-scrollbar">
-                <main className="flex gap-6 p-6 pt-24 min-h-full">
+                <main className="flex flex-col md:flex-row gap-4 md:gap-6 p-4 md:p-6 pt-20 md:pt-24 min-h-full">
                     <Sidebar />
-                    <div className="flex-1 flex flex-col gap-6 min-w-0">
+                    <div className="flex-1 flex flex-col gap-4 md:gap-6 min-w-0">
                         <div>
                             <p className="text-sm text-[#6f6f6f]">Copy Attempts</p>
-                            <h1 className="text-3xl font-bold text-white">Execution Decisions</h1>
+                            <h1 className="text-2xl md:text-3xl font-bold text-white">Execution Decisions</h1>
                         </div>
 
                         <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-4">
@@ -227,7 +227,147 @@ export default function CopyAttemptsPage() {
                             <div className="text-red-500">Failed to load copy attempts</div>
                         ) : (
                             <div className="flex flex-col gap-4">
-                                <div className="bg-[#0D0D0D] rounded-2xl p-6 overflow-x-auto border border-[#27272A]">
+                                <div className="md:hidden flex flex-col gap-3">
+                                    {filteredAttempts.length > 0 ? (
+                                        filteredAttempts.map((attempt) => {
+                                            const fillRatio = attempt.filledRatioBps / 100
+                                            const { side, windowStartMs } = getAttemptMeta(attempt.groupKey)
+                                            const slippageMicros =
+                                                attempt.vwapPriceMicros !== null &&
+                                                    attempt.vwapPriceMicros !== undefined
+                                                    ? attempt.vwapPriceMicros - attempt.theirReferencePriceMicros
+                                                    : null
+                                            const slippageCents =
+                                                slippageMicros !== null ? slippageMicros / 10000 : null
+
+                                            const slippageLabel =
+                                                slippageCents === null
+                                                    ? "--"
+                                                    : slippageCents === 0
+                                                        ? "0.00¢"
+                                                        : `${slippageCents > 0 ? "+" : ""}${slippageCents.toFixed(2)}¢`
+
+                                            const slippageIsFavorable =
+                                                slippageCents === null ? null : side === "BUY" ? slippageCents <= 0 : slippageCents >= 0
+
+                                            const decisionTone =
+                                                attempt.decision === "EXECUTE"
+                                                    ? "bg-[#102b1a] text-[#86efac]"
+                                                    : "bg-[#2b1212] text-[#f87171]"
+
+                                            const copyLagMs =
+                                                windowStartMs !== null ? Date.parse(attempt.createdAt) - windowStartMs : null
+
+                                            return (
+                                                <div
+                                                    key={attempt.id}
+                                                    className="rounded-2xl border border-[#27272A] bg-[#0D0D0D] p-4"
+                                                >
+                                                    <div className="flex items-start justify-between gap-3">
+                                                        <div className="min-w-0">
+                                                            <div className="text-sm font-medium text-white truncate">
+                                                                {attempt.marketTitle ?? attempt.marketId ?? "Market"}
+                                                            </div>
+                                                            <div className="mt-0.5 text-xs text-[#6f6f6f] font-mono truncate">
+                                                                {attempt.outcomeLabel ?? attempt.assetId ?? "--"}
+                                                            </div>
+                                                        </div>
+                                                        <span className={`shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${decisionTone}`}>
+                                                            {attempt.decision}
+                                                        </span>
+                                                    </div>
+
+                                                    <div className="mt-3 flex items-center justify-between gap-3">
+                                                        <div className="min-w-0">
+                                                            <div className="text-sm text-white truncate">
+                                                                {attempt.followedUser?.label ?? attempt.followedUserId ?? "--"}
+                                                            </div>
+                                                            <div className="text-xs text-[#6f6f6f] truncate">
+                                                                {formatSourceType(attempt.sourceType, attempt.bufferedTradeCount)}
+                                                            </div>
+                                                        </div>
+                                                        {side ? (
+                                                            <span
+                                                                className={`shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${side === "BUY"
+                                                                    ? "bg-[#102b1a] text-[#86efac]"
+                                                                    : "bg-[#2b1212] text-[#f87171]"
+                                                                    }`}
+                                                            >
+                                                                {side}
+                                                            </span>
+                                                        ) : null}
+                                                    </div>
+
+                                                    <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
+                                                        <div className="rounded-xl border border-[#1F1F1F] bg-[#111111] p-3">
+                                                            <div className="text-[#6f6f6f] uppercase tracking-wider">Time</div>
+                                                            <div className="mt-1 text-white">
+                                                                {new Date(attempt.createdAt).toLocaleString()}
+                                                            </div>
+                                                        </div>
+                                                        <div className="rounded-xl border border-[#1F1F1F] bg-[#111111] p-3">
+                                                            <div className="text-[#6f6f6f] uppercase tracking-wider">Copy Lag</div>
+                                                            <div className="mt-1 text-white font-mono">
+                                                                {formatLag(copyLagMs)}
+                                                            </div>
+                                                        </div>
+                                                        <div className="rounded-xl border border-[#1F1F1F] bg-[#111111] p-3">
+                                                            <div className="text-[#6f6f6f] uppercase tracking-wider">Target / Filled</div>
+                                                            <div className="mt-1 text-white font-mono">
+                                                                {formatCurrency(Number(attempt.targetNotionalMicros) / 1_000_000)} ·{" "}
+                                                                {formatCurrency(Number(attempt.filledNotionalMicros) / 1_000_000)}
+                                                            </div>
+                                                            <div className="mt-0.5 text-[#6f6f6f]">
+                                                                Fill {fillRatio.toFixed(0)}%
+                                                            </div>
+                                                        </div>
+                                                        <div className="rounded-xl border border-[#1F1F1F] bg-[#111111] p-3">
+                                                            <div className="text-[#6f6f6f] uppercase tracking-wider">Slippage</div>
+                                                            <div
+                                                                className={[
+                                                                    "mt-1 font-mono",
+                                                                    slippageIsFavorable === null
+                                                                        ? "text-[#6f6f6f]"
+                                                                        : slippageIsFavorable
+                                                                            ? "text-[#86efac]"
+                                                                            : "text-red-400",
+                                                                ].join(" ")}
+                                                            >
+                                                                {slippageLabel}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    {attempt.reasonCodes.length > 0 ? (
+                                                        <div className="mt-3 flex flex-wrap gap-2">
+                                                            {attempt.reasonCodes.slice(0, 6).map((reason) => (
+                                                                <span
+                                                                    key={reason}
+                                                                    className="rounded-full bg-[#1A1A1A] px-2 py-1 text-[11px] text-[#cfcfcf]"
+                                                                >
+                                                                    {reason}
+                                                                </span>
+                                                            ))}
+                                                            {attempt.reasonCodes.length > 6 ? (
+                                                                <span className="rounded-full bg-[#1A1A1A] px-2 py-1 text-[11px] text-[#6f6f6f]">
+                                                                    +{attempt.reasonCodes.length - 6} more
+                                                                </span>
+                                                            ) : null}
+                                                        </div>
+                                                    ) : (
+                                                        <div className="mt-3 text-xs text-[#6f6f6f]">No reasons</div>
+                                                    )}
+                                                </div>
+                                            )
+                                        })
+                                    ) : (
+                                        <div className="rounded-2xl border border-[#27272A] bg-[#0D0D0D] p-6 text-center text-[#6f6f6f]">
+                                            No copy attempts match these filters
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div className="hidden md:block bg-[#0D0D0D] rounded-2xl p-6 overflow-x-auto border border-[#27272A]">
                                     <table className="w-full text-left">
                                         <thead>
                                             <tr className="text-[#6f6f6f] border-b border-[#27272A] text-sm">
@@ -368,7 +508,7 @@ export default function CopyAttemptsPage() {
                                     </table>
                                 </div>
 
-                                <div className="flex justify-between items-center bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-4">
+                                <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-4">
                                     <div className="flex items-center gap-2">
                                         <button
                                             onClick={() => setCursorHistory((prev) => prev.slice(0, -1))}
@@ -386,7 +526,7 @@ export default function CopyAttemptsPage() {
                                             </button>
                                         )}
                                     </div>
-                                    <span className="text-sm text-[#6f6f6f] font-mono">
+                                    <span className="text-sm text-[#6f6f6f] font-mono self-start sm:self-auto">
                                         {total > 0 ? `${start}-${end} of ${total}` : '0 of 0'}
                                     </span>
                                     <button
