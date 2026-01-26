@@ -7,8 +7,8 @@ import { z } from "zod";
  */
 export const GuardrailsSchema = z.object({
     // Price protection
-    /** Max worsening vs their fill price in micros (default: 10000 = $0.01) */
-    maxWorseningVsTheirFillMicros: z.number().int().default(10_000),
+    /** Max worsening vs their fill price in micros (default: 20000 = $0.02) */
+    maxWorseningVsTheirFillMicros: z.number().int().default(20_000),
     /**
      * Optional max BUY cost per share in micros (e.g. 970_000 = $0.97).
      * If set, BUY trades with simulated VWAP >= this value are skipped.
@@ -20,8 +20,8 @@ export const GuardrailsSchema = z.object({
     maxSpreadMicros: z.number().int().default(20_000),
     /** Min depth multiplier in bps (default: 12500 = 1.25x) */
     minDepthMultiplierBps: z.number().int().default(12_500),
-    /** No new opens within X minutes of market close (default: 30) */
-    noNewOpensWithinMinutesToClose: z.number().int().default(30),
+    /** No new opens within X minutes of market close (default: 1) */
+    noNewOpensWithinMinutesToClose: z.number().int().default(1),
 
     // Timing realism
     /** Artificial latency before decision in ms (default: 750) */
@@ -30,20 +30,20 @@ export const GuardrailsSchema = z.object({
     jitterMsMax: z.number().int().default(250),
 
     // Exposure limits (in basis points of equity)
-    /** Max total exposure as % of equity (default: 7000 = 70%) */
-    maxTotalExposureBps: z.number().int().default(7000),
-    /** Max exposure per market as % of equity (default: 500 = 5%) */
-    maxExposurePerMarketBps: z.number().int().default(500),
-    /** Max exposure per followed user as % of equity (default: 2000 = 20%) */
-    maxExposurePerUserBps: z.number().int().default(2000),
+    /** Max total exposure as % of equity (default: 10000 = 100%) */
+    maxTotalExposureBps: z.number().int().default(10_000),
+    /** Max exposure per market as % of equity (default: 10000 = 100%) */
+    maxExposurePerMarketBps: z.number().int().default(10_000),
+    /** Max exposure per followed user as % of equity (default: 10000 = 100%) */
+    maxExposurePerUserBps: z.number().int().default(10_000),
 
     // Circuit breakers (in basis points)
-    /** Daily loss limit (default: 300 = 3%) */
-    dailyLossLimitBps: z.number().int().default(300),
-    /** Weekly loss limit (default: 800 = 8%) */
-    weeklyLossLimitBps: z.number().int().default(800),
-    /** Max drawdown limit (default: 1200 = 12%) */
-    maxDrawdownLimitBps: z.number().int().default(1200),
+    /** Daily loss limit (default: 10000 = 100%) */
+    dailyLossLimitBps: z.number().int().default(10_000),
+    /** Weekly loss limit (default: 10000 = 100%) */
+    weeklyLossLimitBps: z.number().int().default(10_000),
+    /** Max drawdown limit (default: 10000 = 100%) */
+    maxDrawdownLimitBps: z.number().int().default(10_000),
 });
 
 export type Guardrails = z.infer<typeof GuardrailsSchema>;
@@ -79,10 +79,10 @@ export type BudgetEnforcementType =
  * Use SizingSchema for full validation with refinements.
  */
 export const SizingSchemaBase = z.object({
-    /** Copy percentage of their notional in bps (default: 100 = 1%) */
-    copyPctNotionalBps: z.number().int().default(100),
-    /** Minimum trade notional in micros (default: 5_000_000 = $5) */
-    minTradeNotionalMicros: z.number().int().default(5_000_000),
+    /** Copy percentage of their notional in bps (default: 1 = 0.01%) */
+    copyPctNotionalBps: z.number().int().default(1),
+    /** Minimum trade notional in micros (default: 10_000 = $0.01) */
+    minTradeNotionalMicros: z.number().int().default(10_000),
     /** Maximum trade notional in micros (default: 250_000_000 = $250) */
     maxTradeNotionalMicros: z.number().int().default(250_000_000),
     /** Max trade as % of bankroll in bps (default: 75 = 0.75%) */

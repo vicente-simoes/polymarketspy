@@ -11,6 +11,7 @@ const POLL_INTERVAL_MS = 30_000;
 const BACKFILL_MINUTES = 15;
 
 let pollInterval: NodeJS.Timeout | null = null;
+let pollInFlight = false;
 
 /**
  * Run one polling cycle.
@@ -32,6 +33,22 @@ async function pollCycle(): Promise<void> {
     }
 }
 
+async function runPollCycleOnce(): Promise<void> {
+    if (pollInFlight) {
+        logger.warn("Skipping poll cycle (previous cycle still running)");
+        return;
+    }
+
+    pollInFlight = true;
+    const startMs = Date.now();
+    try {
+        await pollCycle();
+    } finally {
+        pollInFlight = false;
+        logger.debug({ durationMs: Date.now() - startMs }, "Poll cycle complete");
+    }
+}
+
 /**
  * Start the polling loop.
  *
@@ -50,7 +67,7 @@ export async function startPolling(): Promise<void> {
 
     // Start regular polling (checkpoint-based incremental fetch)
     pollInterval = setInterval(() => {
-        pollCycle().catch((err) => {
+        runPollCycleOnce().catch((err) => {
             logger.error({ err }, "Poll cycle error");
         });
     }, POLL_INTERVAL_MS);
@@ -66,5 +83,6 @@ export function stopPolling(): void {
         clearInterval(pollInterval);
         pollInterval = null;
     }
+    pollInFlight = false;
     logger.info("Polling stopped");
 }

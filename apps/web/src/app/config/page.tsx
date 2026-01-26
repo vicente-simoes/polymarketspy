@@ -90,24 +90,24 @@ type SmallTradeBufferingForm = {
 }
 
 const guardrailsDefaults = {
-    maxWorseningVsTheirFillMicros: 10_000,
+    maxWorseningVsTheirFillMicros: 20_000,
     maxOverMidMicros: 15_000,
     maxSpreadMicros: 20_000,
     minDepthMultiplierBps: 12_500,
-    noNewOpensWithinMinutesToClose: 30,
+    noNewOpensWithinMinutesToClose: 1,
     decisionLatencyMs: 0,
     jitterMsMax: 0,
-    maxTotalExposureBps: 7000,
-    maxExposurePerMarketBps: 500,
-    maxExposurePerUserBps: 2000,
-    dailyLossLimitBps: 300,
-    weeklyLossLimitBps: 800,
-    maxDrawdownLimitBps: 1200
+    maxTotalExposureBps: 10_000,
+    maxExposurePerMarketBps: 10_000,
+    maxExposurePerUserBps: 10_000,
+    dailyLossLimitBps: 10_000,
+    weeklyLossLimitBps: 10_000,
+    maxDrawdownLimitBps: 10_000
 }
 
 const sizingDefaults = {
-    copyPctNotionalBps: 100,
-    minTradeNotionalMicros: 5_000_000,
+    copyPctNotionalBps: 1,
+    minTradeNotionalMicros: 10_000,
     maxTradeNotionalMicros: 250_000_000,
     maxTradeBankrollBps: 75
 }

@@ -2,11 +2,17 @@ import { ActivityType, Prisma } from "@prisma/client";
 import { prisma } from "../db/prisma.js";
 import { createChildLogger } from "../log/logger.js";
 import {
-    fetchWalletActivity,
+    fetchAllWalletActivity,
     type PolymarketActivity,
     type ActivityPayload,
 } from "../poly/index.js";
-import { getLastActivityTime, setLastActivityTime } from "./checkpoint.js";
+import {
+    clearActivityIngestCursor,
+    getActivityIngestCursor,
+    getLastActivityTime,
+    setActivityIngestCursor,
+    setLastActivityTime,
+} from "./checkpoint.js";
 import { queues } from "../queue/queues.js";
 
 const logger = createChildLogger({ module: "activity-ingester" });
@@ -109,25 +115,78 @@ export async function ingestActivityForUser(
 ): Promise<number> {
     const log = logger.child({ userId, wallet: walletAddress });
 
-    // Get last checkpoint or use backfill window
-    let afterTime = await getLastActivityTime(userId);
-    if (!afterTime && options?.backfillMinutes) {
-        afterTime = new Date(Date.now() - options.backfillMinutes * 60 * 1000);
-        log.info({ backfillMinutes: options.backfillMinutes }, "Cold start activity backfill");
+    const existingCursor = await getActivityIngestCursor(userId);
+    const checkpointAfterTime = await getLastActivityTime(userId);
+    const checkpointAfterSeconds = checkpointAfterTime
+        ? Math.floor(checkpointAfterTime.getTime() / 1000)
+        : null;
+
+    if (
+        existingCursor &&
+        checkpointAfterSeconds != null &&
+        existingCursor.afterSeconds !== checkpointAfterSeconds
+    ) {
+        log.warn(
+            { checkpointAfterSeconds, cursorAfterSeconds: existingCursor.afterSeconds },
+            "Discarding stale activity ingest cursor (after changed)"
+        );
+        await clearActivityIngestCursor(userId);
     }
 
-    // Fetch activity from API
-    const activities = await fetchWalletActivity(walletAddress, {
-        after: afterTime ? Math.floor(afterTime.getTime() / 1000).toString() : undefined,
-        limit: 100,
+    const cursor = await getActivityIngestCursor(userId);
+
+    let afterSeconds: number | undefined;
+    let resumeBeforeSeconds: number | undefined;
+    let sessionMaxSeenSeconds: number | undefined = cursor?.maxSeenSeconds;
+
+    if (cursor) {
+        afterSeconds = cursor.afterSeconds;
+        resumeBeforeSeconds = cursor.beforeSeconds;
+    } else if (checkpointAfterSeconds != null) {
+        afterSeconds = checkpointAfterSeconds;
+    } else {
+        const backfillMinutes = options?.backfillMinutes ?? 15;
+        afterSeconds = Math.floor(
+            (Date.now() - backfillMinutes * 60 * 1000) / 1000
+        );
+        log.info(
+            { backfillMinutes },
+            "No activity checkpoint found; using bounded backfill window"
+        );
+    }
+
+    // Fetch ALL activity from API with pagination to avoid missing events
+    // during high-activity windows (e.g., >100 events in catch-up period)
+    const activityFetch = await fetchAllWalletActivity(walletAddress, {
+        after: afterSeconds != null ? afterSeconds.toString() : undefined,
+        before: resumeBeforeSeconds != null ? resumeBeforeSeconds.toString() : undefined,
+        maxPages: 10, // Safety limit: max 1000 activities per ingestion cycle
+        pageSize: 100,
     });
+    const activities = activityFetch.items;
 
     if (activities.length === 0) {
-        log.debug("No new activity events");
-        return 0;
+        log.debug(
+            {
+                exhausted: activityFetch.exhausted,
+                hitMaxPages: activityFetch.hitMaxPages,
+                stalled: activityFetch.stalled,
+                pagesFetched: activityFetch.pagesFetched,
+            },
+            "No activity returned from API"
+        );
+    } else {
+        log.info(
+            {
+                count: activities.length,
+                exhausted: activityFetch.exhausted,
+                hitMaxPages: activityFetch.hitMaxPages,
+                stalled: activityFetch.stalled,
+                pagesFetched: activityFetch.pagesFetched,
+            },
+            "Fetched activity from API (paginated)"
+        );
     }
-
-    log.info({ count: activities.length }, "Fetched activity from API");
 
     let newCount = 0;
     let latestTime: Date | null = null;
@@ -204,9 +263,48 @@ export async function ingestActivityForUser(
         }
     }
 
-    // Update checkpoint
-    if (latestTime) {
-        await setLastActivityTime(userId, latestTime);
+    const latestSeconds =
+        latestTime != null ? Math.floor(latestTime.getTime() / 1000) : undefined;
+    if (latestSeconds != null) {
+        sessionMaxSeenSeconds = sessionMaxSeenSeconds == null
+            ? latestSeconds
+            : Math.max(sessionMaxSeenSeconds, latestSeconds);
+    }
+
+    if (activityFetch.exhausted) {
+        if (sessionMaxSeenSeconds != null) {
+            await setLastActivityTime(
+                userId,
+                new Date(sessionMaxSeenSeconds * 1000)
+            );
+        }
+        await clearActivityIngestCursor(userId);
+    } else if (activityFetch.stalled) {
+        log.error(
+            {
+                afterSeconds,
+                beforeSeconds: resumeBeforeSeconds,
+                pagesFetched: activityFetch.pagesFetched,
+            },
+            "Activity pagination stalled; not advancing checkpoint (will retry next cycle)"
+        );
+        await clearActivityIngestCursor(userId);
+    } else if (activityFetch.nextBefore) {
+        const nextBeforeSeconds = Number(activityFetch.nextBefore);
+        if (Number.isFinite(nextBeforeSeconds)) {
+            await setActivityIngestCursor(userId, {
+                afterSeconds: afterSeconds ?? 0,
+                beforeSeconds: nextBeforeSeconds,
+                maxSeenSeconds: sessionMaxSeenSeconds,
+                updatedAt: new Date().toISOString(),
+            });
+        } else {
+            log.warn(
+                { nextBefore: activityFetch.nextBefore },
+                "Invalid nextBefore from activity pagination; clearing cursor"
+            );
+            await clearActivityIngestCursor(userId);
+        }
     }
 
     log.info({ newCount, total: activities.length }, "Activity ingestion complete");

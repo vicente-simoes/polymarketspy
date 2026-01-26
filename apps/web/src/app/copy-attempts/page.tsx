@@ -442,8 +442,21 @@ export default function CopyAttemptsPage() {
                                                                 </span>
                                                             </td>
                                                             <td className="py-4 px-3 text-sm text-white">
-                                                                <div className="font-medium">
-                                                                    {attempt.marketTitle ?? attempt.marketId ?? "Unknown"}
+                                                                <div className="flex items-center gap-2">
+                                                                    {side && (
+                                                                        <span
+                                                                            className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                                                                                side === "BUY"
+                                                                                    ? "bg-[#102b1a] text-[#86efac]"
+                                                                                    : "bg-[#2b1212] text-[#f87171]"
+                                                                            }`}
+                                                                        >
+                                                                            {side}
+                                                                        </span>
+                                                                    )}
+                                                                    <span className="font-medium truncate">
+                                                                        {attempt.marketTitle ?? attempt.marketId ?? "Unknown"}
+                                                                    </span>
                                                                 </div>
                                                                 <div className="text-xs text-[#6f6f6f] font-mono">
                                                                     {attempt.outcomeLabel ?? attempt.assetId ?? "Asset N/A"}

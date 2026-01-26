@@ -3,13 +3,20 @@ import { prisma } from "../db/prisma.js";
 import { createChildLogger } from "../log/logger.js";
 import {
     fetchWalletTrades,
+    fetchAllWalletTrades,
     priceToMicros,
     sharesToMicros,
     usdcToMicros,
     type PolymarketTrade,
-} from "../poly/index.js";
+	} from "../poly/index.js";
 import { fetchTokenMetadata } from "../enrichment/gamma.js";
-import { getLastTradeTime, setLastTradeTime } from "./checkpoint.js";
+import {
+    clearTradeIngestCursor,
+    getLastTradeTime,
+    getTradeIngestCursor,
+    setLastTradeTime,
+    setTradeIngestCursor,
+} from "./checkpoint.js";
 import { queues } from "../queue/queues.js";
 import { setLastCanonicalEventTime } from "../health/server.js";
 
@@ -156,32 +163,86 @@ export async function ingestTradesForUser(
 ): Promise<number> {
     const log = logger.child({ userId, wallet: walletAddress });
 
-    // Get last checkpoint or use backfill window
-    let afterTime = await getLastTradeTime(userId);
-    if (!afterTime && options?.backfillMinutes) {
-        afterTime = new Date(Date.now() - options.backfillMinutes * 60 * 1000);
-        log.info({ backfillMinutes: options.backfillMinutes }, "Cold start backfill");
+    const existingCursor = await getTradeIngestCursor(userId);
+    const checkpointAfterTime = await getLastTradeTime(userId);
+    const checkpointAfterSeconds = checkpointAfterTime
+        ? Math.floor(checkpointAfterTime.getTime() / 1000)
+        : null;
+
+    if (
+        existingCursor &&
+        checkpointAfterSeconds != null &&
+        existingCursor.afterSeconds !== checkpointAfterSeconds
+    ) {
+        log.warn(
+            { checkpointAfterSeconds, cursorAfterSeconds: existingCursor.afterSeconds },
+            "Discarding stale trade ingest cursor (after changed)"
+        );
+        await clearTradeIngestCursor(userId);
     }
 
-    // Fetch trades from API
-    const trades = await fetchWalletTrades(walletAddress, {
-        after: afterTime ? Math.floor(afterTime.getTime() / 1000).toString() : undefined,
-        limit: 100,
+    const cursor = await getTradeIngestCursor(userId);
+
+    // Determine the effective "after" window. Always bound the window to avoid accidentally
+    // backfilling an entire wallet history when no checkpoint exists.
+    let afterSeconds: number | undefined;
+    let resumeBeforeSeconds: number | undefined;
+    let sessionMaxSeenSeconds: number | undefined = cursor?.maxSeenSeconds;
+
+    if (cursor) {
+        afterSeconds = cursor.afterSeconds;
+        resumeBeforeSeconds = cursor.beforeSeconds;
+    } else if (checkpointAfterSeconds != null) {
+        afterSeconds = checkpointAfterSeconds;
+    } else {
+        const backfillMinutes = options?.backfillMinutes ?? 15;
+        afterSeconds = Math.floor(
+            (Date.now() - backfillMinutes * 60 * 1000) / 1000
+        );
+        log.info({ backfillMinutes }, "No trade checkpoint found; using bounded backfill window");
+    }
+
+    // Fetch ALL trades from API with pagination to avoid missing trades
+    // during high-activity windows (e.g., >100 trades in catch-up period)
+    const tradeFetch = await fetchAllWalletTrades(walletAddress, {
+        after: afterSeconds != null ? afterSeconds.toString() : undefined,
+        before: resumeBeforeSeconds != null ? resumeBeforeSeconds.toString() : undefined,
+        maxPages: 10, // Safety limit: max 1000 trades per ingestion cycle
+        pageSize: 100,
     });
+    const trades = tradeFetch.items;
 
     if (trades.length === 0) {
-        log.debug("No new trades");
-        return 0;
+        log.debug(
+            {
+                exhausted: tradeFetch.exhausted,
+                hitMaxPages: tradeFetch.hitMaxPages,
+                stalled: tradeFetch.stalled,
+                pagesFetched: tradeFetch.pagesFetched,
+            },
+            "No trades returned from API"
+        );
+    } else {
+        log.info(
+            {
+                count: trades.length,
+                exhausted: tradeFetch.exhausted,
+                hitMaxPages: tradeFetch.hitMaxPages,
+                stalled: tradeFetch.stalled,
+                pagesFetched: tradeFetch.pagesFetched,
+            },
+            "Fetched trades from API (paginated)"
+        );
     }
 
-    log.info({ count: trades.length }, "Fetched trades from API");
-
-    // Prefetch token metadata so API-caught trades show market/outcome on the dashboard.
-    await ensureTokenMetadataCached(
-        trades
-            .map((trade) => trade.assetId ?? trade.asset ?? trade.asset_id ?? null)
-            .filter((id): id is string => Boolean(id))
-    );
+    if (trades.length > 0) {
+        // Prefetch token metadata so API-caught trades show market/outcome on the dashboard.
+        await ensureTokenMetadataCached(
+            trades
+                .map((trade) => trade.assetId ?? trade.asset ?? trade.asset_id ?? null)
+                .filter((id): id is string => Boolean(id))
+        );
+    }
 
     let newCount = 0;
     let latestTime: Date | null = null;
@@ -281,9 +342,47 @@ export async function ingestTradesForUser(
         }
     }
 
-    // Update checkpoint
-    if (latestTime) {
-        await setLastTradeTime(userId, latestTime);
+    const latestSeconds =
+        latestTime != null ? Math.floor(latestTime.getTime() / 1000) : undefined;
+    if (latestSeconds != null) {
+        sessionMaxSeenSeconds = sessionMaxSeenSeconds == null
+            ? latestSeconds
+            : Math.max(sessionMaxSeenSeconds, latestSeconds);
+    }
+
+    if (tradeFetch.exhausted) {
+        // Only advance the "last trade time" checkpoint when we've exhausted pagination.
+        // If pagination is incomplete, advancing this checkpoint can permanently skip older trades.
+        if (sessionMaxSeenSeconds != null) {
+            await setLastTradeTime(userId, new Date(sessionMaxSeenSeconds * 1000));
+        }
+        await clearTradeIngestCursor(userId);
+    } else if (tradeFetch.stalled) {
+        log.error(
+            {
+                afterSeconds,
+                beforeSeconds: resumeBeforeSeconds,
+                pagesFetched: tradeFetch.pagesFetched,
+            },
+            "Trade pagination stalled; not advancing checkpoint (will retry next cycle)"
+        );
+        await clearTradeIngestCursor(userId);
+    } else if (tradeFetch.nextBefore) {
+        const nextBeforeSeconds = Number(tradeFetch.nextBefore);
+        if (Number.isFinite(nextBeforeSeconds)) {
+            await setTradeIngestCursor(userId, {
+                afterSeconds: afterSeconds ?? 0,
+                beforeSeconds: nextBeforeSeconds,
+                maxSeenSeconds: sessionMaxSeenSeconds,
+                updatedAt: new Date().toISOString(),
+            });
+        } else {
+            log.warn(
+                { nextBefore: tradeFetch.nextBefore },
+                "Invalid nextBefore from trade pagination; clearing cursor"
+            );
+            await clearTradeIngestCursor(userId);
+        }
     }
 
     log.info({ newCount, total: trades.length }, "Trade ingestion complete");
@@ -379,18 +478,30 @@ export async function ingestTradesForWalletFast(
         return { newCount: 0, latencyMs: Date.now() - fetchStart };
     }
 
-    // Fetch trades from API
-    const trades = await fetchWalletTrades(walletAddress, {
+    // Fetch ALL trades from API with pagination for fast reconcile
+    // Uses smaller page size but still paginates to avoid missing trades
+    const tradeFetch = await fetchAllWalletTrades(walletAddress, {
         after: Math.floor(afterTime.getTime() / 1000).toString(),
-        limit: 50, // Smaller limit for fast reconcile
+        maxPages: 5, // Smaller limit for fast reconcile: max 250 trades
+        pageSize: 50,
     });
+    const trades = tradeFetch.items;
 
     if (trades.length === 0) {
         log.debug("No new trades in fast fetch");
         return { newCount: 0, latencyMs: Date.now() - fetchStart };
     }
 
-    log.debug({ count: trades.length }, "Fast fetched trades from API");
+    log.debug(
+        {
+            count: trades.length,
+            exhausted: tradeFetch.exhausted,
+            hitMaxPages: tradeFetch.hitMaxPages,
+            stalled: tradeFetch.stalled,
+            pagesFetched: tradeFetch.pagesFetched,
+        },
+        "Fast fetched trades from API (paginated)"
+    );
 
     let newCount = 0;
 

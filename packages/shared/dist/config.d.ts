@@ -5,7 +5,7 @@ import { z } from "zod";
  * 1 bps = 0.01%, 1 micro = $0.000001
  */
 export declare const GuardrailsSchema: z.ZodObject<{
-    /** Max worsening vs their fill price in micros (default: 10000 = $0.01) */
+    /** Max worsening vs their fill price in micros (default: 20000 = $0.02) */
     maxWorseningVsTheirFillMicros: z.ZodDefault<z.ZodNumber>;
     /**
      * Optional max BUY cost per share in micros (e.g. 970_000 = $0.97).
@@ -18,23 +18,23 @@ export declare const GuardrailsSchema: z.ZodObject<{
     maxSpreadMicros: z.ZodDefault<z.ZodNumber>;
     /** Min depth multiplier in bps (default: 12500 = 1.25x) */
     minDepthMultiplierBps: z.ZodDefault<z.ZodNumber>;
-    /** No new opens within X minutes of market close (default: 30) */
+    /** No new opens within X minutes of market close (default: 1) */
     noNewOpensWithinMinutesToClose: z.ZodDefault<z.ZodNumber>;
     /** Artificial latency before decision in ms (default: 750) */
     decisionLatencyMs: z.ZodDefault<z.ZodNumber>;
     /** Max jitter added to latency in ms (default: 250) */
     jitterMsMax: z.ZodDefault<z.ZodNumber>;
-    /** Max total exposure as % of equity (default: 7000 = 70%) */
+    /** Max total exposure as % of equity (default: 10000 = 100%) */
     maxTotalExposureBps: z.ZodDefault<z.ZodNumber>;
-    /** Max exposure per market as % of equity (default: 500 = 5%) */
+    /** Max exposure per market as % of equity (default: 10000 = 100%) */
     maxExposurePerMarketBps: z.ZodDefault<z.ZodNumber>;
-    /** Max exposure per followed user as % of equity (default: 2000 = 20%) */
+    /** Max exposure per followed user as % of equity (default: 10000 = 100%) */
     maxExposurePerUserBps: z.ZodDefault<z.ZodNumber>;
-    /** Daily loss limit (default: 300 = 3%) */
+    /** Daily loss limit (default: 10000 = 100%) */
     dailyLossLimitBps: z.ZodDefault<z.ZodNumber>;
-    /** Weekly loss limit (default: 800 = 8%) */
+    /** Weekly loss limit (default: 10000 = 100%) */
     weeklyLossLimitBps: z.ZodDefault<z.ZodNumber>;
-    /** Max drawdown limit (default: 1200 = 12%) */
+    /** Max drawdown limit (default: 10000 = 100%) */
     maxDrawdownLimitBps: z.ZodDefault<z.ZodNumber>;
 }, "strip", z.ZodTypeAny, {
     maxWorseningVsTheirFillMicros: number;
@@ -94,9 +94,9 @@ export type BudgetEnforcementType = (typeof BudgetEnforcement)[keyof typeof Budg
  * Use SizingSchema for full validation with refinements.
  */
 export declare const SizingSchemaBase: z.ZodObject<{
-    /** Copy percentage of their notional in bps (default: 100 = 1%) */
+    /** Copy percentage of their notional in bps (default: 1 = 0.01%) */
     copyPctNotionalBps: z.ZodDefault<z.ZodNumber>;
-    /** Minimum trade notional in micros (default: 5_000_000 = $5) */
+    /** Minimum trade notional in micros (default: 10_000 = $0.01) */
     minTradeNotionalMicros: z.ZodDefault<z.ZodNumber>;
     /** Maximum trade notional in micros (default: 250_000_000 = $250) */
     maxTradeNotionalMicros: z.ZodDefault<z.ZodNumber>;
@@ -173,9 +173,9 @@ export declare const SizingSchemaBase: z.ZodObject<{
  * Controls how much to copy from each trade.
  */
 export declare const SizingSchema: z.ZodEffects<z.ZodObject<{
-    /** Copy percentage of their notional in bps (default: 100 = 1%) */
+    /** Copy percentage of their notional in bps (default: 1 = 0.01%) */
     copyPctNotionalBps: z.ZodDefault<z.ZodNumber>;
-    /** Minimum trade notional in micros (default: 5_000_000 = $5) */
+    /** Minimum trade notional in micros (default: 10_000 = $0.01) */
     minTradeNotionalMicros: z.ZodDefault<z.ZodNumber>;
     /** Maximum trade notional in micros (default: 250_000_000 = $250) */
     maxTradeNotionalMicros: z.ZodDefault<z.ZodNumber>;
