@@ -5,10 +5,14 @@ import { Header } from "@/components/header"
 import useSWR from "swr"
 import { fetcher } from "@/lib/fetcher"
 import { useRouter } from "next/navigation"
+import { useMemo, useState } from "react"
 import {
+    Area,
+    AreaChart,
     Bar,
     BarChart,
     CartesianGrid,
+    ReferenceLine,
     ResponsiveContainer,
     Tooltip,
     XAxis,
@@ -44,6 +48,10 @@ interface GlobalPortfolioResponse {
         cash: number
         exposure: number
         pnl: number
+        pnl1h: number | null
+        pnl24h: number | null
+        pnl7d: number | null
+        pnl30d: number | null
         exposurePct: number
         maxTotalExposurePct: number
         riskUtilizationPct: number
@@ -54,12 +62,23 @@ interface GlobalPortfolioResponse {
     }
 }
 
+interface GlobalPnlCurveResponse {
+    range: string
+    pnlCurve: {
+        date: string
+        timestamp: number
+        value: number
+    }[]
+}
+
 const formatCurrency = (value: number) =>
     new Intl.NumberFormat("en-US", {
         style: "currency",
         currency: "USD",
         minimumFractionDigits: 2
     }).format(value)
+
+const formatSignedCurrency = (value: number) => `${value >= 0 ? "+" : ""}${formatCurrency(value)}`
 
 const formatPercent = (value: number) => `${value.toFixed(1)}%`
 
@@ -123,8 +142,18 @@ function ProgressStat({
 
 export default function PortfolioPage() {
     const router = useRouter()
+    const [pnlRange, setPnlRange] = useState<"1H" | "1D" | "1W" | "1M">("1D")
     const { data, error, isLoading } = useSWR<GlobalPortfolioResponse>(
         "/api/portfolio/global",
+        fetcher,
+        { refreshInterval: 10000 }
+    )
+    const {
+        data: pnlCurveData,
+        error: pnlCurveError,
+        isLoading: pnlCurveLoading
+    } = useSWR<GlobalPnlCurveResponse>(
+        `/api/portfolio/global/pnl?range=${pnlRange}`,
         fetcher,
         { refreshInterval: 10000 }
     )
@@ -132,8 +161,38 @@ export default function PortfolioPage() {
     const metrics = data?.metrics
     const pnl = metrics?.pnl ?? 0
     const pnlPositive = pnl >= 0
+    const pnl1h = metrics?.pnl1h ?? null
+    const pnl24h = metrics?.pnl24h ?? null
+    const pnl7d = metrics?.pnl7d ?? null
+    const pnl30d = metrics?.pnl30d ?? null
     const riskUtilization = metrics?.riskUtilizationPct ?? 0
     const drawdownUtilization = metrics?.drawdownUtilizationPct ?? 0
+    const pnlCurve = pnlCurveData?.pnlCurve ?? []
+    const pnlCurveHasData = pnlCurve.length > 0
+    const pnlCurveLastValue = pnlCurveHasData ? pnlCurve[pnlCurve.length - 1].value : 0
+    const pnlCurvePositive = pnlCurveLastValue >= 0
+    const pnlCurveColor = pnlCurvePositive ? "#86efac" : "#f87171"
+
+    const pnlCurveDomain = useMemo(() => {
+        if (!pnlCurveHasData) return { min: -1, max: 1 }
+        const values = pnlCurve.map((p) => p.value)
+        let min = Math.min(...values)
+        let max = Math.max(...values)
+        if (min === max) {
+            min -= 1
+            max += 1
+        }
+        const padding = (max - min) * 0.08
+        return { min: min - padding, max: max + padding }
+    }, [pnlCurve, pnlCurveHasData])
+
+    const formatPnlXAxis = (tickItem: string) => {
+        const date = new Date(tickItem)
+        if (pnlRange === "1H" || pnlRange === "1D") {
+            return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+        }
+        return date.toLocaleDateString([], { month: "short", day: "numeric" })
+    }
 
     const riskStatus =
         riskUtilization > 90 ? "bad" : riskUtilization > 70 ? "warn" : "good"
@@ -173,11 +232,11 @@ export default function PortfolioPage() {
                         ) : error || !data || !metrics ? (
                             <div className="text-red-500">Failed to load portfolio</div>
                         ) : (
-                            <div className="flex flex-col gap-6">
-                                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                                    <MetricTile
-                                        label="Total Equity"
-                                        value={formatCurrency(metrics.equity)}
+	                            <div className="flex flex-col gap-6">
+	                                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+	                                    <MetricTile
+	                                        label="Total Equity"
+	                                        value={formatCurrency(metrics.equity)}
                                     />
                                     <MetricTile
                                         label="Exposure"
@@ -187,8 +246,52 @@ export default function PortfolioPage() {
                                     <MetricTile label="Cash" value={formatCurrency(metrics.cash)} />
                                     <MetricTile
                                         label="Total PnL"
-                                        value={`${pnlPositive ? "+" : ""}${formatCurrency(pnl)}`}
+                                        value={formatSignedCurrency(pnl)}
                                         valueClassName={pnlPositive ? "text-[#86efac]" : "text-red-400"}
+                                    />
+                                    <MetricTile
+                                        label="PnL (1H)"
+                                        value={pnl1h === null ? "--" : formatSignedCurrency(pnl1h)}
+                                        valueClassName={
+                                            pnl1h === null
+                                                ? "text-[#6f6f6f]"
+                                                : pnl1h >= 0
+                                                    ? "text-[#86efac]"
+                                                    : "text-red-400"
+                                        }
+                                    />
+                                    <MetricTile
+                                        label="PnL (24H)"
+                                        value={pnl24h === null ? "--" : formatSignedCurrency(pnl24h)}
+                                        valueClassName={
+                                            pnl24h === null
+                                                ? "text-[#6f6f6f]"
+                                                : pnl24h >= 0
+                                                    ? "text-[#86efac]"
+                                                    : "text-red-400"
+                                        }
+                                    />
+                                    <MetricTile
+                                        label="PnL (1W)"
+                                        value={pnl7d === null ? "--" : formatSignedCurrency(pnl7d)}
+                                        valueClassName={
+                                            pnl7d === null
+                                                ? "text-[#6f6f6f]"
+                                                : pnl7d >= 0
+                                                    ? "text-[#86efac]"
+                                                    : "text-red-400"
+                                        }
+                                    />
+                                    <MetricTile
+                                        label="PnL (1M)"
+                                        value={pnl30d === null ? "--" : formatSignedCurrency(pnl30d)}
+                                        valueClassName={
+                                            pnl30d === null
+                                                ? "text-[#6f6f6f]"
+                                                : pnl30d >= 0
+                                                    ? "text-[#86efac]"
+                                                    : "text-red-400"
+                                        }
                                     />
                                     <MetricTile
                                         label="Max Drawdown"
@@ -206,14 +309,159 @@ export default function PortfolioPage() {
                                                     ? "text-amber-400"
                                                     : "text-red-400"
                                         }
-                                        hint={`Cap ${metrics.maxTotalExposurePct.toFixed(0)}%`}
-                                    />
-                                </div>
+	                                        hint={`Cap ${metrics.maxTotalExposurePct.toFixed(0)}%`}
+	                                    />
+	                                </div>
 
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                    <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
-                                        <div className="text-sm text-[#6f6f6f]">Exposure by User</div>
-                                        <div className="mt-4 h-[260px]">
+	                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
+	                                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+	                                        <div className="flex items-center gap-3">
+	                                            <h2 className="text-xl font-medium text-white">PnL</h2>
+	                                            <div className="text-sm text-[#6f6f6f]">
+	                                                Δ {pnlCurveHasData ? formatSignedCurrency(pnlCurveLastValue) : "--"}
+	                                            </div>
+	                                        </div>
+
+	                                        <div className="flex items-center bg-[#1A1A1A] rounded-lg p-1 max-w-full overflow-x-auto no-scrollbar">
+	                                            {[
+	                                                { label: "1H", value: "1H" as const },
+	                                                { label: "24H", value: "1D" as const },
+	                                                { label: "1W", value: "1W" as const },
+	                                                { label: "1M", value: "1M" as const }
+	                                            ].map((option) => (
+	                                                <button
+	                                                    key={option.value}
+	                                                    onClick={() => setPnlRange(option.value)}
+	                                                    className={`px-3 py-1 text-sm rounded-md transition-colors shrink-0 ${
+	                                                        pnlRange === option.value
+	                                                            ? "bg-[#2A2A2A] text-white shadow-sm"
+	                                                            : "text-gray-400 hover:text-white"
+	                                                    }`}
+	                                                >
+	                                                    {option.label}
+	                                                </button>
+	                                            ))}
+	                                        </div>
+	                                    </div>
+
+	                                    <div className="mt-4 h-[260px]">
+	                                        {pnlCurveLoading && !pnlCurveHasData ? (
+	                                            <div className="h-full flex items-center justify-center text-[#6f6f6f]">
+	                                                Loading PnL chart...
+	                                            </div>
+	                                        ) : pnlCurveError ? (
+	                                            <div className="h-full flex items-center justify-center text-red-500">
+	                                                Failed to load PnL chart
+	                                            </div>
+	                                        ) : pnlCurveHasData ? (
+	                                            <ResponsiveContainer width="100%" height="100%">
+	                                                <AreaChart data={pnlCurve}>
+	                                                    <defs>
+	                                                        <linearGradient
+	                                                            id="pnlGradient"
+	                                                            x1="0"
+	                                                            y1="0"
+	                                                            x2="0"
+	                                                            y2="1"
+	                                                        >
+	                                                            <stop
+	                                                                offset="5%"
+	                                                                stopColor={pnlCurveColor}
+	                                                                stopOpacity={0.3}
+	                                                            />
+	                                                            <stop
+	                                                                offset="95%"
+	                                                                stopColor={pnlCurveColor}
+	                                                                stopOpacity={0}
+	                                                            />
+	                                                        </linearGradient>
+	                                                    </defs>
+	                                                    <CartesianGrid
+	                                                        strokeDasharray="3 3"
+	                                                        stroke="#1F1F1F"
+	                                                        vertical={false}
+	                                                    />
+	                                                    <XAxis
+	                                                        dataKey="date"
+	                                                        tick={{ fill: "#6f6f6f", fontSize: 10 }}
+	                                                        axisLine={false}
+	                                                        tickLine={false}
+	                                                        minTickGap={24}
+	                                                        tickFormatter={formatPnlXAxis}
+	                                                    />
+	                                                    <YAxis
+	                                                        domain={[pnlCurveDomain.min, pnlCurveDomain.max]}
+	                                                        tick={{ fill: "#6f6f6f" }}
+	                                                        axisLine={false}
+	                                                        tickLine={false}
+	                                                        tickFormatter={(value) =>
+	                                                            `${value >= 0 ? "+" : ""}${formatCurrency(value)}`
+	                                                        }
+	                                                    />
+	                                                    <ReferenceLine y={0} stroke="#27272A" strokeDasharray="4 4" />
+	                                                    <Tooltip
+	                                                        content={({ active, payload }) => {
+	                                                            if (active && payload && payload.length) {
+	                                                                const point = payload[0].payload as {
+	                                                                    date: string
+	                                                                    value: number
+	                                                                }
+	                                                                const date = new Date(point.date)
+	                                                                const formattedDate =
+	                                                                    pnlRange === "1H" || pnlRange === "1D"
+	                                                                        ? date.toLocaleString([], {
+	                                                                              month: "short",
+	                                                                              day: "numeric",
+	                                                                              hour: "2-digit",
+	                                                                              minute: "2-digit"
+	                                                                          })
+	                                                                        : date.toLocaleDateString([], {
+	                                                                              year: "numeric",
+	                                                                              month: "short",
+	                                                                              day: "numeric"
+	                                                                          })
+	                                                                return (
+	                                                                    <div className="rounded-lg border border-[#27272A] bg-[#0D0D0D] p-3 text-sm text-white shadow-xl">
+	                                                                        <div className="text-[#6f6f6f]">
+	                                                                            {formattedDate}
+	                                                                        </div>
+	                                                                        <div
+	                                                                            className={`mt-1 ${
+	                                                                                point.value >= 0
+	                                                                                    ? "text-[#86efac]"
+	                                                                                    : "text-red-400"
+	                                                                            }`}
+	                                                                        >
+	                                                                            {formatSignedCurrency(point.value)}
+	                                                                        </div>
+	                                                                    </div>
+	                                                                )
+	                                                            }
+	                                                            return null
+	                                                        }}
+	                                                    />
+	                                                    <Area
+	                                                        type="monotone"
+	                                                        dataKey="value"
+	                                                        stroke={pnlCurveColor}
+	                                                        strokeWidth={2}
+	                                                        fillOpacity={1}
+	                                                        fill="url(#pnlGradient)"
+	                                                    />
+	                                                </AreaChart>
+	                                            </ResponsiveContainer>
+	                                        ) : (
+	                                            <div className="h-full flex items-center justify-center text-[#6f6f6f]">
+	                                                No PnL history yet
+	                                            </div>
+	                                        )}
+	                                    </div>
+	                                </div>
+
+	                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+	                                    <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
+	                                        <div className="text-sm text-[#6f6f6f]">Exposure by User</div>
+	                                        <div className="mt-4 h-[260px]">
                                             {data.exposureByUser.length > 0 ? (
                                                 <ResponsiveContainer width="100%" height="100%">
                                                     <BarChart data={data.exposureByUser}>

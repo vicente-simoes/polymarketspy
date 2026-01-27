@@ -10,6 +10,11 @@ export async function GET() {
     }
 
     try {
+        const snapshotToPnl = (snapshot: {
+            realizedPnlMicros: bigint
+            unrealizedPnlMicros: bigint
+        }) => Number(snapshot.realizedPnlMicros + snapshot.unrealizedPnlMicros) / 1_000_000
+
         const guardrails = await prisma.guardrailConfig.findFirst({
             where: { scope: "GLOBAL", followedUserId: null },
             orderBy: { updatedAt: "desc" }
@@ -40,20 +45,16 @@ export async function GET() {
             orderBy: { bucketTime: "asc" }
         })
 
-        const equityCurve = equityCurveSnapshots.map((snapshot) => ({
-            ts: snapshot.bucketTime.getTime(),
-            value: Number(snapshot.equityMicros) / 1_000_000
-        }))
-
         let peakEquity = 0
         let maxDrawdown = 0
         let currentDrawdown = 0
-        for (const point of equityCurve) {
-            if (point.value > peakEquity) {
-                peakEquity = point.value
+        for (const snapshot of equityCurveSnapshots) {
+            const equity = Number(snapshot.equityMicros) / 1_000_000
+            if (equity > peakEquity) {
+                peakEquity = equity
             }
             if (peakEquity > 0) {
-                const drawdown = (peakEquity - point.value) / peakEquity
+                const drawdown = (peakEquity - equity) / peakEquity
                 if (drawdown > maxDrawdown) {
                     maxDrawdown = drawdown
                 }
@@ -250,11 +251,63 @@ export async function GET() {
         const exposure = latestSnapshot
             ? Number(latestSnapshot.exposureMicros) / 1_000_000
             : 0
-        const pnl = latestSnapshot
-            ? Number(
-                  latestSnapshot.realizedPnlMicros + latestSnapshot.unrealizedPnlMicros
-              ) / 1_000_000
-            : 0
+        const pnl = latestSnapshot ? snapshotToPnl(latestSnapshot) : 0
+
+        const latestBucketTime = latestSnapshot?.bucketTime ?? null
+        const [pnl1hSnapshot, pnl24hSnapshot, pnl7dSnapshot, pnl30dSnapshot] =
+            latestBucketTime
+                ? await Promise.all([
+                      prisma.portfolioSnapshot.findFirst({
+                          where: {
+                              portfolioScope: "EXEC_GLOBAL",
+                              followedUserId: null,
+                              bucketTime: {
+                                  lte: new Date(latestBucketTime.getTime() - 60 * 60 * 1000)
+                              }
+                          },
+                          orderBy: { bucketTime: "desc" }
+                      }),
+                      prisma.portfolioSnapshot.findFirst({
+                          where: {
+                              portfolioScope: "EXEC_GLOBAL",
+                              followedUserId: null,
+                              bucketTime: {
+                                  lte: new Date(latestBucketTime.getTime() - 24 * 60 * 60 * 1000)
+                              }
+                          },
+                          orderBy: { bucketTime: "desc" }
+                      }),
+                      prisma.portfolioSnapshot.findFirst({
+                          where: {
+                              portfolioScope: "EXEC_GLOBAL",
+                              followedUserId: null,
+                              bucketTime: {
+                                  lte: new Date(
+                                      latestBucketTime.getTime() - 7 * 24 * 60 * 60 * 1000
+                                  )
+                              }
+                          },
+                          orderBy: { bucketTime: "desc" }
+                      }),
+                      prisma.portfolioSnapshot.findFirst({
+                          where: {
+                              portfolioScope: "EXEC_GLOBAL",
+                              followedUserId: null,
+                              bucketTime: {
+                                  lte: new Date(
+                                      latestBucketTime.getTime() - 30 * 24 * 60 * 60 * 1000
+                                  )
+                              }
+                          },
+                          orderBy: { bucketTime: "desc" }
+                      })
+                  ])
+                : [null, null, null, null]
+
+        const pnl1h = pnl1hSnapshot ? pnl - snapshotToPnl(pnl1hSnapshot) : null
+        const pnl24h = pnl24hSnapshot ? pnl - snapshotToPnl(pnl24hSnapshot) : null
+        const pnl7d = pnl7dSnapshot ? pnl - snapshotToPnl(pnl7dSnapshot) : null
+        const pnl30d = pnl30dSnapshot ? pnl - snapshotToPnl(pnl30dSnapshot) : null
 
         const exposurePct = equity > 0 ? (exposure / equity) * 100 : 0
         const maxTotalExposurePct = maxTotalExposureBps / 100
@@ -274,12 +327,15 @@ export async function GET() {
             positions: enrichedPositions,
             exposureByMarket,
             exposureByUser,
-            equityCurve,
             metrics: {
                 equity,
                 cash,
                 exposure,
                 pnl,
+                pnl1h,
+                pnl24h,
+                pnl7d,
+                pnl30d,
                 exposurePct,
                 maxTotalExposurePct,
                 riskUtilizationPct,
