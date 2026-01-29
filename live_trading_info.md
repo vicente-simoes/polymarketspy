@@ -98,6 +98,7 @@ Use **FAK** for copy-trade execution, with a **slippage cap**:
 
 Then:
 - round price to tick size
+- after rounding, ensure the order is still marketable vs the current book snapshot (BUY: `price >= bestAsk`, SELL: `price <= bestBid`); otherwise skip
 - compute size from your intended notional (or copy shares directly)
 - place **FAK** marketable limit
 
@@ -165,7 +166,6 @@ You want it operationally useful, like Copy Attempts.
 
 ## 7) Ops + safety (non-negotiable for live money)
 
-- **Shadow mode** first: generate/record would-be live orders, place none.
 - **Idempotency**: every CopyIntent must have a deterministic idempotencyKey to prevent duplicates.
 - **Retries** must check order state before re-posting.
 - **Secrets**:
@@ -179,13 +179,13 @@ You want it operationally useful, like Copy Attempts.
 
 ```text
 CLOB Overview
-https://docs.polymarket.com/developers/CLOB/overview
+https://docs.polymarket.com/developers/CLOB/introduction
 
 CLOB Quickstart (TS client, API key derive/create)
 https://docs.polymarket.com/developers/CLOB/quickstart
 
 Order Management — Place Single Order (GTC/FAK/FOK + errors)
-https://docs.polymarket.com/developers/CLOB/order-management/place-single-order
+https://docs.polymarket.com/developers/CLOB/orders/create-order
 
 Websocket — User Channel (order + trade updates)
 https://docs.polymarket.com/developers/CLOB/websocket/user-channel
@@ -197,10 +197,10 @@ Glossary (includes FAK/FOK definitions)
 https://docs.polymarket.com/quickstart/reference/glossary
 
 API Rate Limits
-https://docs.polymarket.com/quickstart/reference/api-rate-limits
+https://docs.polymarket.com/quickstart/introduction/rate-limits
 
 Bridge & Swap overview (funding; USDC.e on Polygon)
-https://docs.polymarket.com/developers/bridge-swap/overview
+https://docs.polymarket.com/developers/misc-endpoints/bridge-overview
 
 Proxy wallet overview
-https://docs.polymarket.com/developers/proxy-wallets/proxy-wallet
+https://docs.polymarket.com/developers/proxy-wallet
