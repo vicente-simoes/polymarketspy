@@ -26,12 +26,14 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url)
     const limit = parseInt(searchParams.get("limit") || "50")
     const decision = searchParams.get("decision") // EXECUTE or SKIP
+    const assetId = searchParams.get("assetId")
     const cursor = searchParams.get("cursor")
 
     try {
         const where = {
             portfolioScope: "EXEC_GLOBAL" as const,
             ...(decision && { decision: decision as any }),
+            ...(assetId && { groupKey: { contains: `:${assetId}:` } })
         }
 
         const [total, attempts] = await Promise.all([

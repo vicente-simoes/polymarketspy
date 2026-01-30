@@ -33,6 +33,7 @@ import {
     type ReconcileJobData,
 } from "./types.js";
 import { deriveTradeFields, type TrackedWalletInfo } from "./decoder.js";
+import { getBlockTimestampOrFallback } from "./blockTimestamp.js";
 
 const logger = createChildLogger({ module: "alchemy-ws" });
 
@@ -307,6 +308,9 @@ async function insertCanonicalWsTrade(
     const side = decoded.side === "BUY" ? TradeSide.BUY : TradeSide.SELL;
     const proxyWallet = decoded.isProxy ? matchedWallet : null;
 
+    // Get block timestamp for accurate eventTime (with fallback to detectTime)
+    const eventTime = await getBlockTimestampOrFallback(event.blockNumber, decoded.detectTime);
+
     try {
         const inserted = await prisma.tradeEvent.create({
             data: {
@@ -328,7 +332,7 @@ async function insertCanonicalWsTrade(
                 shareMicros: decoded.shareMicros,
                 notionalMicros: decoded.notionalMicros,
                 feeMicros: decoded.feeMicros,
-                eventTime: decoded.detectTime, // Use detect time; block timestamp requires extra RPC
+                eventTime, // Block timestamp (accurate) with fallback to detectTime
                 detectTime: decoded.detectTime,
             },
         });

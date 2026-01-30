@@ -180,15 +180,15 @@ export default function TradesPage() {
     }
 
     return (
-        <div className="relative h-screen w-full bg-black text-white overflow-hidden">
+        <div className="relative w-full bg-black text-white overflow-hidden min-h-dvh md:h-screen">
             <Header />
             <div className="h-full overflow-y-auto no-scrollbar">
-                <main className="flex gap-6 p-6 pt-24 min-h-full">
+                <main className="flex flex-col md:flex-row gap-4 md:gap-6 p-4 md:p-6 pt-20 md:pt-24 min-h-full">
                     <Sidebar />
-                    <div className="flex-1 flex flex-col gap-6 min-w-0">
+                    <div className="flex-1 flex flex-col gap-4 md:gap-6 min-w-0">
                         <div>
                             <p className="text-sm text-[#6f6f6f]">Trades</p>
-                            <h1 className="text-3xl font-bold text-white">Detected Trades</h1>
+                            <h1 className="text-2xl md:text-3xl font-bold text-white">Detected Trades</h1>
                         </div>
 
                         <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-4">
@@ -234,7 +234,125 @@ export default function TradesPage() {
                             <div className="text-red-500">Failed to load trades</div>
                         ) : (
                             <div className="flex flex-col gap-4">
-                                <div className="bg-[#0D0D0D] rounded-2xl p-6 overflow-x-auto border border-[#27272A]">
+                                <div className="md:hidden flex flex-col gap-3">
+                                    {filteredTrades.length > 0 ? (
+                                        filteredTrades.map((trade) => {
+                                            const lagMs =
+                                                new Date(trade.detectTime).getTime() -
+                                                new Date(trade.eventTime).getTime()
+                                            const { market, asset } = formatMarketDisplay(trade)
+                                            const userDisplay =
+                                                trade.userLabel ?? formatWallet(trade.profileWallet)
+                                            const userMeta = trade.userLabel
+                                                ? formatWallet(trade.profileWallet)
+                                                : trade.proxyWallet
+                                                    ? `Proxy: ${formatWallet(trade.proxyWallet)}`
+                                                    : null
+                                            const { label: sourceLabel, className: sourceClassName } =
+                                                formatSourceBadge(trade)
+
+                                            return (
+                                                <div
+                                                    key={trade.id}
+                                                    className="rounded-2xl border border-[#27272A] bg-[#0D0D0D] p-4"
+                                                >
+                                                    <div className="flex items-start justify-between gap-3">
+                                                        <div className="min-w-0">
+                                                            <div className="text-sm font-medium text-white truncate">
+                                                                {market}
+                                                            </div>
+                                                            <div className="mt-0.5 text-xs text-[#6f6f6f] font-mono truncate">
+                                                                {asset}
+                                                            </div>
+                                                        </div>
+                                                        <span
+                                                            className={`shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${trade.side === "BUY"
+                                                                ? "bg-[#102b1a] text-[#86efac]"
+                                                                : "bg-[#2b1212] text-[#f87171]"
+                                                                }`}
+                                                        >
+                                                            {trade.side}
+                                                        </span>
+                                                    </div>
+
+                                                    <div className="mt-3 flex items-center justify-between gap-3">
+                                                        <div className="min-w-0">
+                                                            <div className="text-sm text-white truncate">
+                                                                {userDisplay}
+                                                            </div>
+                                                            {userMeta ? (
+                                                                <div className="text-xs text-[#6f6f6f] font-mono truncate">
+                                                                    {userMeta}
+                                                                </div>
+                                                            ) : null}
+                                                        </div>
+                                                        <span
+                                                            className={`shrink-0 rounded-full px-2 py-1 text-xs ${sourceClassName}`}
+                                                        >
+                                                            {sourceLabel}
+                                                        </span>
+                                                    </div>
+
+                                                    <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
+                                                        <div className="rounded-xl border border-[#1F1F1F] bg-[#111111] p-3">
+                                                            <div className="text-[#6f6f6f] uppercase tracking-wider">
+                                                                Time
+                                                            </div>
+                                                            <div className="mt-1 text-white">
+                                                                {new Date(trade.eventTime).toLocaleString()}
+                                                            </div>
+                                                        </div>
+                                                        <div className="rounded-xl border border-[#1F1F1F] bg-[#111111] p-3">
+                                                            <div className="text-[#6f6f6f] uppercase tracking-wider">
+                                                                Detect Lag
+                                                            </div>
+                                                            <div className="mt-1 text-white font-mono">
+                                                                {formatLag(lagMs)}
+                                                            </div>
+                                                        </div>
+                                                        <div className="rounded-xl border border-[#1F1F1F] bg-[#111111] p-3">
+                                                            <div className="text-[#6f6f6f] uppercase tracking-wider">
+                                                                Notional
+                                                            </div>
+                                                            <div className="mt-1 text-white font-mono">
+                                                                {formatCurrency(
+                                                                    Number(trade.notionalMicros) / 1_000_000
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                        <div className="rounded-xl border border-[#1F1F1F] bg-[#111111] p-3">
+                                                            <div className="text-[#6f6f6f] uppercase tracking-wider">
+                                                                Price / Shares
+                                                            </div>
+                                                            <div className="mt-1 text-white font-mono">
+                                                                {(trade.priceMicros / 1_000_000).toFixed(3)} ·{" "}
+                                                                {(Number(trade.shareMicros) / 1_000_000).toFixed(2)}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    {trade.txHash ? (
+                                                        <a
+                                                            href={`https://polygonscan.com/tx/${trade.txHash}`}
+                                                            target="_blank"
+                                                            rel="noopener noreferrer"
+                                                            className="mt-3 inline-flex items-center gap-2 text-xs text-[#6f6f6f] hover:text-[#86efac] transition-colors"
+                                                        >
+                                                            View transaction
+                                                            <ExternalLink size={12} />
+                                                        </a>
+                                                    ) : null}
+                                                </div>
+                                            )
+                                        })
+                                    ) : (
+                                        <div className="rounded-2xl border border-[#27272A] bg-[#0D0D0D] p-6 text-center text-[#6f6f6f]">
+                                            No trades match these filters
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div className="hidden md:block bg-[#0D0D0D] rounded-2xl p-6 overflow-x-auto border border-[#27272A]">
                                     <table className="w-full text-left">
                                         <thead>
                                             <tr className="text-[#6f6f6f] border-b border-[#27272A] text-sm">
@@ -340,7 +458,7 @@ export default function TradesPage() {
                                     </table>
                                 </div>
 
-                                <div className="flex justify-between items-center bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-4">
+                                <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-4">
                                     <div className="flex items-center gap-2">
                                         <button
                                             onClick={() => setCursorHistory((prev) => prev.slice(0, -1))}
@@ -358,7 +476,7 @@ export default function TradesPage() {
                                             </button>
                                         )}
                                     </div>
-                                    <span className="text-sm text-[#6f6f6f] font-mono">
+                                    <span className="text-sm text-[#6f6f6f] font-mono self-start sm:self-auto">
                                         {total > 0 ? `${start}-${end} of ${total}` : '0 of 0'}
                                     </span>
                                     <button

@@ -35,6 +35,11 @@ export async function setCheckpoint<T>(key: string, value: T): Promise<void> {
     logger.debug({ key }, "Checkpoint saved");
 }
 
+export async function deleteCheckpoint(key: string): Promise<void> {
+    await prisma.systemCheckpoint.deleteMany({ where: { key } });
+    logger.debug({ key }, "Checkpoint deleted");
+}
+
 /**
  * Get last trade time checkpoint for a followed user.
  */
@@ -54,6 +59,30 @@ export async function setLastTradeTime(userId: string, time: Date): Promise<void
     });
 }
 
+export type ApiTimePaginationCursor = {
+    afterSeconds: number;
+    beforeSeconds?: number;
+    maxSeenSeconds?: number;
+    updatedAt: string;
+};
+
+export async function getTradeIngestCursor(
+    userId: string
+): Promise<ApiTimePaginationCursor | null> {
+    return getCheckpoint<ApiTimePaginationCursor>(`api:tradeIngestCursor:${userId}`);
+}
+
+export async function setTradeIngestCursor(
+    userId: string,
+    cursor: ApiTimePaginationCursor
+): Promise<void> {
+    await setCheckpoint(`api:tradeIngestCursor:${userId}`, cursor);
+}
+
+export async function clearTradeIngestCursor(userId: string): Promise<void> {
+    await deleteCheckpoint(`api:tradeIngestCursor:${userId}`);
+}
+
 /**
  * Get last activity time checkpoint for a followed user.
  */
@@ -71,4 +100,21 @@ export async function setLastActivityTime(userId: string, time: Date): Promise<v
     await setCheckpoint(`api:lastActivityTime:${userId}`, {
         timestamp: time.toISOString(),
     });
+}
+
+export async function getActivityIngestCursor(
+    userId: string
+): Promise<ApiTimePaginationCursor | null> {
+    return getCheckpoint<ApiTimePaginationCursor>(`api:activityIngestCursor:${userId}`);
+}
+
+export async function setActivityIngestCursor(
+    userId: string,
+    cursor: ApiTimePaginationCursor
+): Promise<void> {
+    await setCheckpoint(`api:activityIngestCursor:${userId}`, cursor);
+}
+
+export async function clearActivityIngestCursor(userId: string): Promise<void> {
+    await deleteCheckpoint(`api:activityIngestCursor:${userId}`);
 }

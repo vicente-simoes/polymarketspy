@@ -20,7 +20,7 @@ const brandFont = Unbounded({
 
 export const metadata: Metadata = {
   title: "PolymarketSpy",
-  description: "Paper copy trading system for Polymarket",
+  description: "Copy Polymarket trades in real-time.",
 };
 
 export default function RootLayout({

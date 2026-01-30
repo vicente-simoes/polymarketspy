@@ -22,7 +22,6 @@ export const QUEUE_NAMES = {
     GROUP_EVENTS: "q_group_events",
     COPY_ATTEMPT_USER: "q_copy_attempt_user",
     COPY_ATTEMPT_GLOBAL: "q_copy_attempt_global",
-    PORTFOLIO_APPLY: "q_portfolio_apply",
     RECONCILE: "q_reconcile",
     PRICES: "q_prices",
 } as const;
@@ -95,7 +94,6 @@ export const queues = {
     groupEvents: createQueue(QUEUE_NAMES.GROUP_EVENTS),
     copyAttemptUser: createQueue(QUEUE_NAMES.COPY_ATTEMPT_USER),
     copyAttemptGlobal: createQueue(QUEUE_NAMES.COPY_ATTEMPT_GLOBAL),
-    portfolioApply: createQueue(QUEUE_NAMES.PORTFOLIO_APPLY),
     reconcile: createQueue(QUEUE_NAMES.RECONCILE),
     prices: createQueue(QUEUE_NAMES.PRICES),
 };

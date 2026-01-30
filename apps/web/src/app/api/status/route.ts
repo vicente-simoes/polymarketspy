@@ -217,7 +217,6 @@ export async function GET() {
             group: queueDepths.groupEvents ?? null,
             copyUser: queueDepths.copyAttemptUser ?? null,
             copyGlobal: queueDepths.copyAttemptGlobal ?? null,
-            apply: queueDepths.portfolioApply ?? null,
             reconcile: queueDepths.reconcile ?? null,
             prices: queueDepths.prices ?? null,
             dlq: null

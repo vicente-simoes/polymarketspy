@@ -43,6 +43,29 @@ import type { TradeEventGroup, ActivityEventGroup, EventGroup, CopySourceType } 
 
 const logger = createChildLogger({ module: "executor" });
 
+const MARKET_ID_CACHE_TTL_MS = 60_000;
+const marketIdCache = new Map<string, { marketId: string | null; expiresAtMs: number }>();
+
+function isNumericMarketId(value: string | null): value is string {
+    return typeof value === "string" && /^\d+$/.test(value);
+}
+
+async function getMarketIdForToken(tokenId: string): Promise<string | null> {
+    const now = Date.now();
+    const cached = marketIdCache.get(tokenId);
+    if (cached && cached.expiresAtMs > now) {
+        return cached.marketId;
+    }
+
+    const meta = await prisma.tokenMetadataCache.findUnique({
+        where: { tokenId },
+        select: { marketId: true },
+    });
+    const marketId = meta?.marketId ?? null;
+    marketIdCache.set(tokenId, { marketId, expiresAtMs: now + MARKET_ID_CACHE_TTL_MS });
+    return marketId;
+}
+
 /**
  * Result of a copy attempt execution.
  */
@@ -92,7 +115,7 @@ async function getPortfolioState(
 
     // Compute total exposure from positions
     const positions = await prisma.ledgerEntry.groupBy({
-        by: ["assetId", "marketId"],
+        by: ["assetId"],
         where: {
             portfolioScope: scope,
             ...(scope === PortfolioScope.EXEC_GLOBAL ? {} : { followedUserId }),
@@ -125,6 +148,16 @@ async function getPortfolioState(
         priceSnapshots.map((snap) => [snap.assetId, snap.midpointPriceMicros])
     );
 
+    const tokenMetadata = assetIds.length
+        ? await prisma.tokenMetadataCache.findMany({
+              where: { tokenId: { in: assetIds } },
+              select: { tokenId: true, marketId: true },
+          })
+        : [];
+    const marketIdByAsset = new Map<string, string | null>(
+        tokenMetadata.map((meta) => [meta.tokenId, meta.marketId ?? null])
+    );
+
     for (const pos of positions) {
         if (!pos.assetId || !pos._sum.shareDeltaMicros) continue;
 
@@ -136,9 +169,10 @@ async function getPortfolioState(
         const absExposure = positionValue < BigInt(0) ? -positionValue : positionValue;
         totalExposureMicros += absExposure;
 
-        if (pos.marketId) {
-            const current = exposureByMarket.get(pos.marketId) ?? BigInt(0);
-            exposureByMarket.set(pos.marketId, current + absExposure);
+        const marketId = marketIdByAsset.get(pos.assetId) ?? null;
+        if (marketId) {
+            const current = exposureByMarket.get(marketId) ?? BigInt(0);
+            exposureByMarket.set(marketId, current + absExposure);
         }
     }
 
@@ -229,6 +263,7 @@ export async function executeTradeGroup(
 ): Promise<ExecutionResult> {
     // Use rawTokenId (on-chain) if available, otherwise assetId (API)
     const effectiveTokenId = group.rawTokenId ?? group.assetId;
+    let resolvedMarketId = isNumericMarketId(group.marketId) ? group.marketId : null;
 
     const log = logger.child({
         groupKey: group.groupKey,
@@ -729,10 +764,14 @@ export async function executeTradeGroup(
 
         // Exposure caps (skip if reducing)
         if (!isReducing) {
+            if (!resolvedMarketId && effectiveTokenId) {
+                resolvedMarketId = await getMarketIdForToken(effectiveTokenId);
+            }
+
             const exposureCheck = checkExposureCaps(
                 portfolioState,
                 simulation.filledNotionalMicros,
-                group.marketId,
+                resolvedMarketId,
                 followedUserId,
                 guardrails,
                 portfolioScope === PortfolioScope.EXEC_GLOBAL ? "GLOBAL" : "USER"
@@ -866,7 +905,9 @@ export async function executeTradeGroup(
             create: {
                 portfolioScope,
                 followedUserId,
-                marketId: group.marketId,
+                marketId: effectiveTokenId
+                    ? resolvedMarketId ?? (await getMarketIdForToken(effectiveTokenId))
+                    : resolvedMarketId,
                 assetId: effectiveTokenId, // Use rawTokenId for WS-first trades
                 entryType: "TRADE_FILL",
                 shareDeltaMicros,

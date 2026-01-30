@@ -90,24 +90,24 @@ type SmallTradeBufferingForm = {
 }
 
 const guardrailsDefaults = {
-    maxWorseningVsTheirFillMicros: 10_000,
+    maxWorseningVsTheirFillMicros: 20_000,
     maxOverMidMicros: 15_000,
     maxSpreadMicros: 20_000,
     minDepthMultiplierBps: 12_500,
-    noNewOpensWithinMinutesToClose: 30,
+    noNewOpensWithinMinutesToClose: 1,
     decisionLatencyMs: 0,
     jitterMsMax: 0,
-    maxTotalExposureBps: 7000,
-    maxExposurePerMarketBps: 500,
-    maxExposurePerUserBps: 2000,
-    dailyLossLimitBps: 300,
-    weeklyLossLimitBps: 800,
-    maxDrawdownLimitBps: 1200
+    maxTotalExposureBps: 10_000,
+    maxExposurePerMarketBps: 10_000,
+    maxExposurePerUserBps: 10_000,
+    dailyLossLimitBps: 10_000,
+    weeklyLossLimitBps: 10_000,
+    maxDrawdownLimitBps: 10_000
 }
 
 const sizingDefaults = {
-    copyPctNotionalBps: 100,
-    minTradeNotionalMicros: 5_000_000,
+    copyPctNotionalBps: 1,
+    minTradeNotionalMicros: 10_000,
     maxTradeNotionalMicros: 250_000_000,
     maxTradeBankrollBps: 75
 }
@@ -940,16 +940,16 @@ export default function ConfigPage() {
     }
 
     return (
-        <div className="relative h-screen w-full bg-black text-white overflow-hidden">
+        <div className="relative w-full bg-black text-white overflow-hidden min-h-dvh md:h-screen">
             <Header />
             <div className="h-full overflow-y-auto no-scrollbar">
-                <main className="flex gap-6 p-6 pt-24 min-h-full">
+                <main className="flex flex-col md:flex-row gap-4 md:gap-6 p-4 md:p-6 pt-20 md:pt-24 min-h-full">
                     <Sidebar />
-                    <div className="flex-1 flex flex-col gap-6 min-w-0">
+                    <div className="flex-1 flex flex-col gap-4 md:gap-6 min-w-0">
                         <div className="flex flex-wrap items-center justify-between gap-4">
                             <div>
                                 <p className="text-sm text-[#6f6f6f]">Configuration</p>
-                                <h1 className="text-3xl font-bold text-white">Guardrails & Sizing</h1>
+                                <h1 className="text-2xl md:text-3xl font-bold text-white">Guardrails & Sizing</h1>
                             </div>
                             <Button
                                 onClick={handleTestConfig}
@@ -962,7 +962,7 @@ export default function ConfigPage() {
                         </div>
 
                         <div className="grid grid-cols-1 xl:grid-cols-[1.4fr_1fr] gap-6">
-                            <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
+                            <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6 xl:row-span-2">
                                 <div className="flex items-center justify-between gap-4">
                                     <div>
                                         <div className="text-sm text-[#6f6f6f] flex items-center gap-2">
@@ -982,7 +982,7 @@ export default function ConfigPage() {
                                     </Button>
                                 </div>
 
-                                <div className="mt-4 grid grid-cols-2 lg:grid-cols-3 gap-4">
+                                <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                                     <SummaryTile
                                         label="Total Exposure Cap"
                                         value={formatBpsPercent(resolvedGuardrails.maxTotalExposureBps)}
@@ -1177,8 +1177,7 @@ export default function ConfigPage() {
                                 ) : null}
                             </div>
 
-                            <div className="flex flex-col gap-6">
-                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
+                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6 xl:col-start-2 xl:row-start-1">
                                     <div className="flex items-center justify-between gap-4">
                                         <div>
                                             <div className="text-sm text-[#6f6f6f] flex items-center gap-2">
@@ -1234,7 +1233,7 @@ export default function ConfigPage() {
                                     </div>
                                 </div>
 
-                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
+                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6 xl:col-start-2 xl:row-start-2">
                                     <div className="flex items-center justify-between gap-4">
                                         <div>
                                             <div className="text-sm text-[#6f6f6f] flex items-center gap-2">
@@ -1301,7 +1300,7 @@ export default function ConfigPage() {
                                     </div>
                                 </div>
 
-                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
+                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6 xl:col-start-1 xl:row-start-3">
                                     <div className="flex items-center justify-between gap-4">
                                         <div>
                                             <div className="text-sm text-[#6f6f6f] flex items-center gap-2">
@@ -1442,7 +1441,7 @@ export default function ConfigPage() {
                                     </div>
                                 </div>
 
-                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
+                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6 xl:col-start-2 xl:row-start-3">
                                     <div className="flex items-center justify-between gap-4">
                                         <div>
                                             <div className="text-sm text-[#6f6f6f] flex items-center gap-2">
@@ -1574,7 +1573,7 @@ export default function ConfigPage() {
                                     </div>
                                 </div>
 
-                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
+                                <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6 xl:col-span-2 xl:row-start-4">
                                     <div className="text-sm text-[#6f6f6f] flex items-center gap-2">
                                         <ClipboardList className="h-4 w-4 text-[#86efac]" />
                                         Test Config (24h)
@@ -1605,7 +1604,6 @@ export default function ConfigPage() {
                                         </div>
                                     )}
                                 </div>
-                            </div>
                         </div>
 
                         <div className="grid grid-cols-1 xl:grid-cols-[1.4fr_1fr] gap-6">

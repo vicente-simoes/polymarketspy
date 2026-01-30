@@ -91,14 +91,6 @@ async function processTradeEvent(
         followedUserId,
     });
 
-    // Step 3: Enqueue for portfolio snapshot update
-    await queues.portfolioApply.add("update-snapshot", {
-        portfolioScope: "SHADOW_USER",
-        followedUserId,
-        eventType: "trade",
-        eventId: tradeEventId,
-    });
-
     log.debug("Trade event processed");
 }
 
@@ -126,14 +118,6 @@ async function processActivityEvent(
             activityType,
         });
     }
-
-    // Step 3: Enqueue for portfolio snapshot update
-    await queues.portfolioApply.add("update-snapshot", {
-        portfolioScope: "SHADOW_USER",
-        followedUserId,
-        eventType: "activity",
-        eventId: activityEventId,
-    });
 
     log.debug("Activity event processed");
 }

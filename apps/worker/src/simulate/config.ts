@@ -27,7 +27,7 @@ const logger = createChildLogger({ module: "simulation-config" });
  */
 export const DEFAULT_GUARDRAILS: Guardrails = {
     // Price protection
-    maxWorseningVsTheirFillMicros: 10_000, // $0.01
+    maxWorseningVsTheirFillMicros: 20_000, // $0.02
     maxOverMidMicros: 15_000, // $0.015
     maxSpreadMicros: 20_000, // $0.02
     minDepthMultiplierBps: 12_500, // 1.25x = 12500 bps
@@ -37,25 +37,25 @@ export const DEFAULT_GUARDRAILS: Guardrails = {
     jitterMsMax: 0,
 
     // Market lifecycle
-    noNewOpensWithinMinutesToClose: 30,
+    noNewOpensWithinMinutesToClose: 1,
 
     // Risk limits (in basis points of equity)
-    maxTotalExposureBps: 7000, // 70%
-    maxExposurePerMarketBps: 500, // 5%
-    maxExposurePerUserBps: 2000, // 20%
+    maxTotalExposureBps: 10_000, // 100%
+    maxExposurePerMarketBps: 10_000, // 100%
+    maxExposurePerUserBps: 10_000, // 100%
 
     // Circuit breakers (in basis points)
-    dailyLossLimitBps: 300, // 3%
-    weeklyLossLimitBps: 800, // 8%
-    maxDrawdownLimitBps: 1200, // 12%
+    dailyLossLimitBps: 10_000, // 100%
+    weeklyLossLimitBps: 10_000, // 100%
+    maxDrawdownLimitBps: 10_000, // 100%
 };
 
 /**
  * Default sizing (locked in planning.md).
  */
 export const DEFAULT_SIZING: Sizing = {
-    copyPctNotionalBps: 100, // 1% = 100 bps
-    minTradeNotionalMicros: 5_000_000, // 5 USDC
+    copyPctNotionalBps: 1, // 0.01% = 1 bps
+    minTradeNotionalMicros: 10_000, // $0.01 USDC
     maxTradeNotionalMicros: 250_000_000, // 250 USDC
     maxTradeBankrollBps: 75, // 0.75% = 75 bps
 

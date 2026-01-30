@@ -135,15 +135,15 @@ export default function MarketsPage() {
     }
 
     return (
-        <div className="relative h-screen w-full bg-black text-white overflow-hidden">
+        <div className="relative w-full bg-black text-white overflow-hidden min-h-dvh md:h-screen">
             <Header />
             <div className="h-full overflow-y-auto no-scrollbar">
-                <main className="flex gap-6 p-6 pt-24 min-h-full">
+                <main className="flex flex-col md:flex-row gap-4 md:gap-6 p-4 md:p-6 pt-20 md:pt-24 min-h-full">
                     <Sidebar />
-                    <div className="flex-1 flex flex-col gap-6 min-w-0">
+                    <div className="flex-1 flex flex-col gap-4 md:gap-6 min-w-0">
                         <div>
                             <p className="text-sm text-[#6f6f6f]">Markets</p>
-                            <h1 className="text-3xl font-bold text-white">Liquidity & Exposure</h1>
+                            <h1 className="text-2xl md:text-3xl font-bold text-white">Liquidity & Exposure</h1>
                         </div>
 
                         <div className="grid grid-cols-1 xl:grid-cols-[1.35fr_1fr] gap-6">
@@ -184,77 +184,156 @@ export default function MarketsPage() {
                                 ) : error ? (
                                     <div className="text-red-500">Failed to load markets</div>
                                 ) : (
-                                    <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6 overflow-x-auto">
-                                        <table className="w-full text-left">
-                                            <thead>
-                                                <tr className="text-[#6f6f6f] border-b border-[#27272A] text-sm">
-                                                    <th className="pb-3 px-3">Market</th>
-                                                    <th className="pb-3 px-3">Status</th>
-                                                    <th className="pb-3 px-3 text-right">Exposure</th>
-                                                    <th className="pb-3 px-3 text-right">Positions</th>
-                                                    <th className="pb-3 px-3 text-right">Close</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                                {filteredMarkets.length > 0 ? (
-                                                    filteredMarkets.map((market) => {
-                                                        const isActive = market.id === selectedMarketId
-                                                        return (
-                                                            <tr
-                                                                key={market.id}
-                                                                onClick={() => setSelectedMarketId(market.id)}
-                                                                className={`border-b border-[#1A1A1A] transition-colors last:border-0 cursor-pointer ${
-                                                                    isActive
-                                                                        ? "bg-[#1A1A1A]"
-                                                                        : "hover:bg-[#1A1A1A]"
-                                                                }`}
-                                                            >
-                                                                <td className="py-4 px-3 text-sm text-white">
-                                                                    <div className="font-medium">
+                                    <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-4 md:p-6">
+                                        <div className="md:hidden flex flex-col gap-3">
+                                            {filteredMarkets.length > 0 ? (
+                                                filteredMarkets.map((market) => {
+                                                    const isActive = market.id === selectedMarketId
+                                                    const statusLabel = market.blacklisted
+                                                        ? "Blacklisted"
+                                                        : market.active
+                                                            ? "Active"
+                                                            : "Closed"
+                                                    const statusTone = market.blacklisted
+                                                        ? "bg-[#2b1212] text-[#f87171]"
+                                                        : market.active
+                                                            ? "bg-[#102b1a] text-[#86efac]"
+                                                            : "bg-[#2a2a2a] text-[#9b9b9b]"
+
+                                                    return (
+                                                        <button
+                                                            type="button"
+                                                            key={market.id}
+                                                            onClick={() => setSelectedMarketId(market.id)}
+                                                            className={[
+                                                                "w-full text-left rounded-2xl border p-4 transition-colors",
+                                                                isActive
+                                                                    ? "border-[#86efac]/40 bg-[#111111]"
+                                                                    : "border-[#27272A] bg-[#111111] hover:bg-[#1A1A1A]",
+                                                            ].join(" ")}
+                                                        >
+                                                            <div className="flex items-start justify-between gap-3">
+                                                                <div className="min-w-0">
+                                                                    <div className="text-sm font-medium text-white truncate">
                                                                         {market.conditionId || "Market"}
                                                                     </div>
-                                                                    <div className="text-xs text-[#6f6f6f] font-mono">
+                                                                    <div className="mt-0.5 text-xs text-[#6f6f6f] font-mono truncate">
                                                                         {formatShortId(market.id)}
                                                                     </div>
-                                                                </td>
-                                                                <td className="py-4 px-3">
-                                                                    <span
-                                                                        className={`rounded-full px-2 py-1 text-xs font-semibold ${
-                                                                            market.blacklisted
-                                                                                ? "bg-[#2b1212] text-[#f87171]"
-                                                                                : market.active
-                                                                                  ? "bg-[#102b1a] text-[#86efac]"
-                                                                                  : "bg-[#2a2a2a] text-[#9b9b9b]"
-                                                                        }`}
-                                                                    >
-                                                                        {market.blacklisted
-                                                                            ? "Blacklisted"
-                                                                            : market.active
-                                                                              ? "Active"
-                                                                              : "Closed"}
-                                                                    </span>
-                                                                </td>
-                                                                <td className="py-4 px-3 text-right text-sm text-white font-mono">
-                                                                    {formatCurrency(market.exposure)}
-                                                                </td>
-                                                                <td className="py-4 px-3 text-right text-sm text-white font-mono">
-                                                                    {market.positions}
-                                                                </td>
-                                                                <td className="py-4 px-3 text-right text-sm text-[#6f6f6f]">
-                                                                    {formatDate(market.closeTime)}
-                                                                </td>
-                                                            </tr>
-                                                        )
-                                                    })
-                                                ) : (
-                                                    <tr>
-                                                        <td colSpan={5} className="py-8 text-center text-[#6f6f6f]">
-                                                            No markets match these filters
-                                                        </td>
+                                                                </div>
+                                                                <span className={`shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${statusTone}`}>
+                                                                    {statusLabel}
+                                                                </span>
+                                                            </div>
+
+                                                            <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
+                                                                <div className="rounded-xl border border-[#1F1F1F] bg-[#0D0D0D] p-3">
+                                                                    <div className="text-[#6f6f6f] uppercase tracking-wider">
+                                                                        Exposure
+                                                                    </div>
+                                                                    <div className="mt-1 text-white font-mono">
+                                                                        {formatCurrency(market.exposure)}
+                                                                    </div>
+                                                                </div>
+                                                                <div className="rounded-xl border border-[#1F1F1F] bg-[#0D0D0D] p-3">
+                                                                    <div className="text-[#6f6f6f] uppercase tracking-wider">
+                                                                        Positions
+                                                                    </div>
+                                                                    <div className="mt-1 text-white font-mono">
+                                                                        {market.positions}
+                                                                    </div>
+                                                                </div>
+                                                                <div className="rounded-xl border border-[#1F1F1F] bg-[#0D0D0D] p-3 col-span-2">
+                                                                    <div className="text-[#6f6f6f] uppercase tracking-wider">
+                                                                        Close
+                                                                    </div>
+                                                                    <div className="mt-1 text-[#cfcfcf]">
+                                                                        {formatDate(market.closeTime)}
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        </button>
+                                                    )
+                                                })
+                                            ) : (
+                                                <div className="rounded-2xl border border-[#27272A] bg-[#111111] p-6 text-center text-[#6f6f6f]">
+                                                    No markets match these filters
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        <div className="hidden md:block overflow-x-auto">
+                                            <table className="w-full text-left">
+                                                <thead>
+                                                    <tr className="text-[#6f6f6f] border-b border-[#27272A] text-sm">
+                                                        <th className="pb-3 px-3">Market</th>
+                                                        <th className="pb-3 px-3">Status</th>
+                                                        <th className="pb-3 px-3 text-right">Exposure</th>
+                                                        <th className="pb-3 px-3 text-right">Positions</th>
+                                                        <th className="pb-3 px-3 text-right">Close</th>
                                                     </tr>
-                                                )}
-                                            </tbody>
-                                        </table>
+                                                </thead>
+                                                <tbody>
+                                                    {filteredMarkets.length > 0 ? (
+                                                        filteredMarkets.map((market) => {
+                                                            const isActive = market.id === selectedMarketId
+                                                            return (
+                                                                <tr
+                                                                    key={market.id}
+                                                                    onClick={() => setSelectedMarketId(market.id)}
+                                                                    className={`border-b border-[#1A1A1A] transition-colors last:border-0 cursor-pointer ${
+                                                                        isActive
+                                                                            ? "bg-[#1A1A1A]"
+                                                                            : "hover:bg-[#1A1A1A]"
+                                                                    }`}
+                                                                >
+                                                                    <td className="py-4 px-3 text-sm text-white">
+                                                                        <div className="font-medium">
+                                                                            {market.conditionId || "Market"}
+                                                                        </div>
+                                                                        <div className="text-xs text-[#6f6f6f] font-mono">
+                                                                            {formatShortId(market.id)}
+                                                                        </div>
+                                                                    </td>
+                                                                    <td className="py-4 px-3">
+                                                                        <span
+                                                                            className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                                                                                market.blacklisted
+                                                                                    ? "bg-[#2b1212] text-[#f87171]"
+                                                                                    : market.active
+                                                                                      ? "bg-[#102b1a] text-[#86efac]"
+                                                                                      : "bg-[#2a2a2a] text-[#9b9b9b]"
+                                                                            }`}
+                                                                        >
+                                                                            {market.blacklisted
+                                                                                ? "Blacklisted"
+                                                                                : market.active
+                                                                                  ? "Active"
+                                                                                  : "Closed"}
+                                                                        </span>
+                                                                    </td>
+                                                                    <td className="py-4 px-3 text-right text-sm text-white font-mono">
+                                                                        {formatCurrency(market.exposure)}
+                                                                    </td>
+                                                                    <td className="py-4 px-3 text-right text-sm text-white font-mono">
+                                                                        {market.positions}
+                                                                    </td>
+                                                                    <td className="py-4 px-3 text-right text-sm text-[#6f6f6f]">
+                                                                        {formatDate(market.closeTime)}
+                                                                    </td>
+                                                                </tr>
+                                                            )
+                                                        })
+                                                    ) : (
+                                                        <tr>
+                                                            <td colSpan={5} className="py-8 text-center text-[#6f6f6f]">
+                                                                No markets match these filters
+                                                            </td>
+                                                        </tr>
+                                                    )}
+                                                </tbody>
+                                            </table>
+                                        </div>
                                     </div>
                                 )}
                             </div>

@@ -8,20 +8,20 @@ export function GlobalPositions() {
   const { data, error, isLoading } = useSWR('/api/portfolio/global', fetcher, { refreshInterval: 10000 })
   const positions = data?.positions || []
 
-  if (isLoading) return <div className="bg-[#0D0D0D] rounded-2xl p-6 text-gray-400">Loading positions...</div>
-  if (error) return <div className="bg-[#0D0D0D] rounded-2xl p-6 text-red-500">Failed to load positions</div>
+  if (isLoading) return <div className="bg-[#0D0D0D] rounded-2xl p-4 md:p-6 text-gray-400">Loading positions...</div>
+  if (error) return <div className="bg-[#0D0D0D] rounded-2xl p-4 md:p-6 text-red-500">Failed to load positions</div>
 
   if (positions.length === 0) {
     return (
-      <div className="bg-[#0D0D0D] rounded-2xl p-6 text-gray-500 text-center">
+      <div className="bg-[#0D0D0D] rounded-2xl p-4 md:p-6 text-gray-500 text-center">
         No open positions
       </div>
     )
   }
 
   return (
-    <div className="bg-[#0D0D0D] rounded-2xl p-6">
-      <h3 className="text-xl font-medium text-white mb-4">Global Positions</h3>
+    <div className="bg-[#0D0D0D] rounded-2xl p-4 md:p-6">
+      <h3 className="text-lg md:text-xl font-medium text-white mb-4">Global Positions</h3>
       <div className="overflow-x-auto">
         <table className="w-full">
           <thead>
