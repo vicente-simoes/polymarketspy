@@ -16,7 +16,7 @@ export async function GET(request: NextRequest) {
         // Basic overview query
         // 1. Get latest global portfolio snapshot
         const latestSnapshot = await prisma.portfolioSnapshot.findFirst({
-            where: { portfolioScope: "EXEC_GLOBAL", followedUserId: null },
+            where: { tradingMode: "PAPER", portfolioScope: "EXEC_GLOBAL", followedUserId: null },
             orderBy: { bucketTime: 'desc' }
         })
 
@@ -54,6 +54,7 @@ export async function GET(request: NextRequest) {
 
         const equityCurveSnapshots = await prisma.portfolioSnapshot.findMany({
             where: {
+                tradingMode: "PAPER",
                 portfolioScope: "EXEC_GLOBAL",
                 followedUserId: null,
                 bucketTime: { gte: startTime }
@@ -97,7 +98,7 @@ export async function GET(request: NextRequest) {
         // a. Group by assetId to get open positions
         const positionsRaw = await prisma.ledgerEntry.groupBy({
             by: ["assetId"],
-            where: { portfolioScope: "EXEC_GLOBAL" },
+            where: { tradingMode: "PAPER", portfolioScope: "EXEC_GLOBAL" },
             _sum: {
                 shareDeltaMicros: true,
                 cashDeltaMicros: true
@@ -175,6 +176,7 @@ export async function GET(request: NextRequest) {
         const userPerformers = await prisma.ledgerEntry.groupBy({
             by: ['followedUserId'],
             where: {
+                tradingMode: "PAPER",
                 portfolioScope: "EXEC_USER",
                 followedUserId: { not: null }
             },
@@ -194,6 +196,7 @@ export async function GET(request: NextRequest) {
 
             const tradeCount = await prisma.copyAttempt.count({
                 where: {
+                    tradingMode: "PAPER",
                     followedUserId: u.followedUserId,
                     decision: "EXECUTE"
                 }

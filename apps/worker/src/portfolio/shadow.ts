@@ -1,4 +1,4 @@
-import { PortfolioScope, LedgerEntryType, TradeSide, ActivityType, Prisma } from "@prisma/client";
+import { PortfolioScope, LedgerEntryType, TradeSide, ActivityType, Prisma, TradingMode } from "@prisma/client";
 import { prisma } from "../db/prisma.js";
 import { createChildLogger } from "../log/logger.js";
 import type { ActivityPayload } from "../poly/types.js";
@@ -48,7 +48,8 @@ export async function applyShadowTrade(
         // Upsert to ensure idempotency
         await prisma.ledgerEntry.upsert({
             where: {
-                portfolioScope_refId_entryType: {
+                tradingMode_portfolioScope_refId_entryType: {
+                    tradingMode: TradingMode.PAPER,
                     portfolioScope: PortfolioScope.SHADOW_USER,
                     refId,
                     entryType: LedgerEntryType.TRADE_FILL,
@@ -159,7 +160,8 @@ export async function applyShadowActivity(
 
                 await prisma.ledgerEntry.upsert({
                     where: {
-                        portfolioScope_refId_entryType: {
+                        tradingMode_portfolioScope_refId_entryType: {
+                            tradingMode: TradingMode.PAPER,
                             portfolioScope: PortfolioScope.SHADOW_USER,
                             refId: `${baseRefId}:${asset.assetId}`,
                             entryType,
@@ -185,7 +187,8 @@ export async function applyShadowActivity(
                 const cashDeltaMicros = BigInt(payload.collateralAmountMicros);
                 await prisma.ledgerEntry.upsert({
                     where: {
-                        portfolioScope_refId_entryType: {
+                        tradingMode_portfolioScope_refId_entryType: {
+                            tradingMode: TradingMode.PAPER,
                             portfolioScope: PortfolioScope.SHADOW_USER,
                             refId: `${baseRefId}:collateral`,
                             entryType,
@@ -217,7 +220,8 @@ export async function applyShadowActivity(
                 const cashDeltaMicros = -BigInt(payload.collateralAmountMicros);
                 await prisma.ledgerEntry.upsert({
                     where: {
-                        portfolioScope_refId_entryType: {
+                        tradingMode_portfolioScope_refId_entryType: {
+                            tradingMode: TradingMode.PAPER,
                             portfolioScope: PortfolioScope.SHADOW_USER,
                             refId: `${baseRefId}:collateral`,
                             entryType,
@@ -244,7 +248,8 @@ export async function applyShadowActivity(
 
                 await prisma.ledgerEntry.upsert({
                     where: {
-                        portfolioScope_refId_entryType: {
+                        tradingMode_portfolioScope_refId_entryType: {
+                            tradingMode: TradingMode.PAPER,
                             portfolioScope: PortfolioScope.SHADOW_USER,
                             refId: `${baseRefId}:${asset.assetId}`,
                             entryType,
@@ -277,7 +282,8 @@ export async function applyShadowActivity(
 
                 await prisma.ledgerEntry.upsert({
                     where: {
-                        portfolioScope_refId_entryType: {
+                        tradingMode_portfolioScope_refId_entryType: {
+                            tradingMode: TradingMode.PAPER,
                             portfolioScope: PortfolioScope.SHADOW_USER,
                             refId: `${baseRefId}:${asset.assetId}`,
                             entryType,
@@ -303,7 +309,8 @@ export async function applyShadowActivity(
                 const cashDeltaMicros = BigInt(payload.collateralAmountMicros);
                 await prisma.ledgerEntry.upsert({
                     where: {
-                        portfolioScope_refId_entryType: {
+                        tradingMode_portfolioScope_refId_entryType: {
+                            tradingMode: TradingMode.PAPER,
                             portfolioScope: PortfolioScope.SHADOW_USER,
                             refId: `${baseRefId}:collateral`,
                             entryType,

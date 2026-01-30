@@ -10,7 +10,7 @@
  * - Apply ledger entries since last snapshot
  */
 
-import { LedgerEntryType, PortfolioScope } from "@prisma/client";
+import { LedgerEntryType, PortfolioScope, TradingMode } from "@prisma/client";
 import { prisma } from "../db/prisma.js";
 import { createChildLogger } from "../log/logger.js";
 import { getLatestPrices } from "./prices.js";
@@ -52,6 +52,7 @@ async function getPositions(
     const entries = await prisma.ledgerEntry.groupBy({
         by: ["assetId"],
         where: {
+            tradingMode: TradingMode.PAPER,
             portfolioScope: scope,
             ...(scope === PortfolioScope.EXEC_GLOBAL && followedUserId === null
                 ? {}
@@ -95,6 +96,7 @@ async function getCashBalance(
     // Sum all cash deltas
     const result = await prisma.ledgerEntry.aggregate({
         where: {
+            tradingMode: TradingMode.PAPER,
             portfolioScope: scope,
             ...(scope === PortfolioScope.EXEC_GLOBAL && followedUserId === null
                 ? {}
@@ -120,6 +122,7 @@ async function getNetExternalFlows(
 ): Promise<bigint> {
     const result = await prisma.ledgerEntry.aggregate({
         where: {
+            tradingMode: TradingMode.PAPER,
             portfolioScope: scope,
             ...(scope === PortfolioScope.EXEC_GLOBAL && followedUserId === null
                 ? {}
@@ -203,6 +206,7 @@ async function computePortfolioSnapshot(
 
         // Write snapshot - handle null followedUserId specially for Prisma compound unique
         const snapshotData = {
+            tradingMode: TradingMode.PAPER,
             portfolioScope: scope,
             followedUserId,
             bucketTime,
@@ -216,7 +220,8 @@ async function computePortfolioSnapshot(
         if (followedUserId !== null) {
             await prisma.portfolioSnapshot.upsert({
                 where: {
-                    portfolioScope_followedUserId_bucketTime: {
+                    tradingMode_portfolioScope_followedUserId_bucketTime: {
+                        tradingMode: TradingMode.PAPER,
                         portfolioScope: scope,
                         followedUserId,
                         bucketTime,
@@ -235,6 +240,7 @@ async function computePortfolioSnapshot(
             // Postgres UNIQUE constraints allow multiple NULLs; keep writes stable if duplicates exist.
             const result = await prisma.portfolioSnapshot.updateMany({
                 where: {
+                    tradingMode: TradingMode.PAPER,
                     portfolioScope: scope,
                     followedUserId: null,
                     bucketTime,
@@ -347,6 +353,7 @@ export async function getLatestSnapshot(
 ) {
     return prisma.portfolioSnapshot.findFirst({
         where: {
+            tradingMode: TradingMode.PAPER,
             portfolioScope: scope,
             followedUserId:
                 scope === PortfolioScope.EXEC_GLOBAL && followedUserId === null

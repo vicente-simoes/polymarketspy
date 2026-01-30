@@ -17,6 +17,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    mem_limit: 1500m
 
   # ============================================
   # Redis - BullMQ queues (not source of truth)
@@ -59,6 +60,7 @@ services:
       redis:
         condition: service_healthy
     restart: always
+    mem_limit: 1500m
 
   # ============================================
   # Web - Next.js dashboard
@@ -80,6 +82,7 @@ services:
       db:
         condition: service_healthy
     restart: always
+    mem_limit: 1000m
 
   # ============================================
   # Nginx - Reverse proxy with TLS

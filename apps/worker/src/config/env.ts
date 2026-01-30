@@ -25,6 +25,14 @@ const envSchema = z.object({
     NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
     LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error", "fatal"]).default("info"),
     WORKER_PORT: z.coerce.number().default(8081),
+
+    // Live trading (Step 7+)
+    // Private key for the live execution wallet (0x-prefixed 64 hex chars)
+    // Optional: worker runs in paper-only mode if not set
+    POLYMARKET_LIVE_PRIVATE_KEY: z
+        .string()
+        .regex(/^0x[a-fA-F0-9]{64}$/, "Private key must be 64 hex chars with 0x prefix")
+        .optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

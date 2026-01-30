@@ -16,7 +16,7 @@ export async function GET() {
             include: {
                 proxies: true,
                 _count: {
-                    select: { copyAttempts: true }
+                    select: { copyAttempts: { where: { tradingMode: "PAPER" } } }
                 }
             },
             orderBy: { createdAt: 'desc' }
@@ -26,6 +26,7 @@ export async function GET() {
         const userIds = users.map((u: { id: string }) => u.id);
         const snapshots = await prisma.portfolioSnapshot.findMany({
             where: {
+                tradingMode: "PAPER",
                 followedUserId: { in: userIds },
                 portfolioScope: { in: ['SHADOW_USER', 'EXEC_GLOBAL'] }
             },

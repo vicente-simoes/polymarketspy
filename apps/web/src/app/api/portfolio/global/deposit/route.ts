@@ -39,6 +39,7 @@ export async function POST(request: Request) {
 
         await prisma.ledgerEntry.create({
             data: {
+                tradingMode: "PAPER",
                 portfolioScope: "EXEC_GLOBAL",
                 followedUserId: null,
                 marketId: null,

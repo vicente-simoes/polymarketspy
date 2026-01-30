@@ -18,8 +18,8 @@ export async function GET(
             where: { id },
             include: {
                 proxies: true,
-                guardrails: true,
-                sizing: true
+                guardrails: { where: { tradingMode: "PAPER" } },
+                sizing: { where: { tradingMode: "PAPER" } }
             }
         })
 
@@ -31,6 +31,7 @@ export async function GET(
 
         const snapshotRows = await prisma.portfolioSnapshot.findMany({
             where: {
+                tradingMode: "PAPER",
                 followedUserId: id,
                 portfolioScope: { in: ["SHADOW_USER", "EXEC_GLOBAL"] }
             },
@@ -92,10 +93,11 @@ export async function GET(
             execPositionsRaw
         ] = await Promise.all([
             prisma.copyAttempt.count({
-                where: { followedUserId: id, portfolioScope: "EXEC_GLOBAL" }
+                where: { tradingMode: "PAPER", followedUserId: id, portfolioScope: "EXEC_GLOBAL" }
             }),
             prisma.copyAttempt.count({
                 where: {
+                    tradingMode: "PAPER",
                     followedUserId: id,
                     portfolioScope: "EXEC_GLOBAL",
                     decision: "EXECUTE"
@@ -103,6 +105,7 @@ export async function GET(
             }),
             prisma.copyAttempt.count({
                 where: {
+                    tradingMode: "PAPER",
                     followedUserId: id,
                     portfolioScope: "EXEC_GLOBAL",
                     decision: "EXECUTE",
@@ -119,6 +122,7 @@ export async function GET(
             }),
             prisma.copyAttempt.findMany({
                 where: {
+                    tradingMode: "PAPER",
                     followedUserId: id,
                     portfolioScope: "EXEC_GLOBAL",
                     decision: "EXECUTE",
@@ -144,6 +148,7 @@ export async function GET(
             }),
             prisma.copyAttempt.findMany({
                 where: {
+                    tradingMode: "PAPER",
                     followedUserId: id,
                     portfolioScope: "EXEC_GLOBAL",
                     decision: "SKIP"
@@ -163,13 +168,13 @@ export async function GET(
                 take: 30
             }),
             prisma.copyAttempt.findMany({
-                where: { followedUserId: id, portfolioScope: "EXEC_GLOBAL" },
+                where: { tradingMode: "PAPER", followedUserId: id, portfolioScope: "EXEC_GLOBAL" },
                 orderBy: { createdAt: "desc" },
                 take: 30
             }),
             prisma.ledgerEntry.groupBy({
                 by: ["assetId"],
-                where: { portfolioScope: "SHADOW_USER", followedUserId: id },
+                where: { tradingMode: "PAPER", portfolioScope: "SHADOW_USER", followedUserId: id },
                 _sum: {
                     shareDeltaMicros: true,
                     cashDeltaMicros: true
@@ -182,7 +187,7 @@ export async function GET(
             }),
             prisma.ledgerEntry.groupBy({
                 by: ["assetId"],
-                where: { portfolioScope: "EXEC_GLOBAL", followedUserId: id },
+                where: { tradingMode: "PAPER", portfolioScope: "EXEC_GLOBAL", followedUserId: id },
                 _sum: {
                     shareDeltaMicros: true,
                     cashDeltaMicros: true
@@ -338,11 +343,11 @@ export async function GET(
         // Load effective sizing config (global + user overrides)
         const [globalSizingRow, userSizingRow] = await Promise.all([
             prisma.copySizingConfig.findFirst({
-                where: { scope: "GLOBAL", followedUserId: null },
+                where: { scope: "GLOBAL", followedUserId: null, tradingMode: "PAPER" },
                 orderBy: { updatedAt: "desc" }
             }),
             prisma.copySizingConfig.findFirst({
-                where: { scope: "GLOBAL", followedUserId: id },
+                where: { scope: "USER", followedUserId: id, tradingMode: "PAPER" },
                 orderBy: { updatedAt: "desc" }
             })
         ])

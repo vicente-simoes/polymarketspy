@@ -6,7 +6,8 @@ import prisma from "@/lib/prisma"
 export const dynamic = "force-dynamic"
 
 const SYSTEM_CONFIG_KEY = "system:config"
-const SMALL_TRADE_BUFFERING_KEY = "config:smallTradeBuffering"
+const SMALL_TRADE_BUFFERING_KEY_PAPER = "config:smallTradeBuffering:PAPER"
+const SMALL_TRADE_BUFFERING_KEY_LEGACY = "config:smallTradeBuffering"
 const DEFAULT_INITIAL_BANKROLL_MICROS = 100_000_000 // $100
 
 export async function POST(request: Request) {
@@ -24,7 +25,7 @@ export async function POST(request: Request) {
             // NOTE: We may have multiple rows due to missing DB uniqueness constraints.
             // Always update ALL matching rows to keep reads consistent.
             const result = await prisma.guardrailConfig.updateMany({
-                where: { scope: "GLOBAL", followedUserId: null },
+                where: { scope: "GLOBAL", followedUserId: null, tradingMode: "PAPER" },
                 data: { configJson: guardrails }
             })
 
@@ -33,6 +34,7 @@ export async function POST(request: Request) {
                     data: {
                         scope: "GLOBAL",
                         followedUserId: null,
+                        tradingMode: "PAPER",
                         configJson: guardrails
                     }
                 })
@@ -42,7 +44,7 @@ export async function POST(request: Request) {
         // Update Global Sizing
         if (sizing) {
             const result = await prisma.copySizingConfig.updateMany({
-                where: { scope: "GLOBAL", followedUserId: null },
+                where: { scope: "GLOBAL", followedUserId: null, tradingMode: "PAPER" },
                 data: { configJson: sizing }
             })
 
@@ -51,6 +53,7 @@ export async function POST(request: Request) {
                     data: {
                         scope: "GLOBAL",
                         followedUserId: null,
+                        tradingMode: "PAPER",
                         configJson: sizing
                     }
                 })
@@ -91,10 +94,22 @@ export async function POST(request: Request) {
 
         // Update Small Trade Buffering Config
         if (smallTradeBuffering && typeof smallTradeBuffering === "object") {
+            // Write mode-aware key (PAPER) and legacy key (back-compat).
             await prisma.systemCheckpoint.upsert({
-                where: { key: SMALL_TRADE_BUFFERING_KEY },
+                where: { key: SMALL_TRADE_BUFFERING_KEY_PAPER },
                 create: {
-                    key: SMALL_TRADE_BUFFERING_KEY,
+                    key: SMALL_TRADE_BUFFERING_KEY_PAPER,
+                    valueJson: smallTradeBuffering
+                },
+                update: {
+                    valueJson: smallTradeBuffering
+                }
+            })
+
+            await prisma.systemCheckpoint.upsert({
+                where: { key: SMALL_TRADE_BUFFERING_KEY_LEGACY },
+                create: {
+                    key: SMALL_TRADE_BUFFERING_KEY_LEGACY,
                     valueJson: smallTradeBuffering
                 },
                 update: {
@@ -122,11 +137,11 @@ export async function GET() {
     try {
         // Use deterministic ordering in case duplicates exist.
         const guardrails = await prisma.guardrailConfig.findFirst({
-            where: { scope: "GLOBAL", followedUserId: null },
+            where: { scope: "GLOBAL", followedUserId: null, tradingMode: "PAPER" },
             orderBy: { updatedAt: "desc" }
         })
         const sizing = await prisma.copySizingConfig.findFirst({
-            where: { scope: "GLOBAL", followedUserId: null },
+            where: { scope: "GLOBAL", followedUserId: null, tradingMode: "PAPER" },
             orderBy: { updatedAt: "desc" }
         })
 
@@ -141,10 +156,16 @@ export async function GET() {
                 : DEFAULT_INITIAL_BANKROLL_MICROS
 
         // Load small trade buffering config
-        const bufferingRow = await prisma.systemCheckpoint.findUnique({
-            where: { key: SMALL_TRADE_BUFFERING_KEY }
+        const bufferingRowPaper = await prisma.systemCheckpoint.findUnique({
+            where: { key: SMALL_TRADE_BUFFERING_KEY_PAPER }
         })
-        const smallTradeBuffering = (bufferingRow?.valueJson || {}) as Record<string, any>
+        const bufferingRowLegacy = bufferingRowPaper
+            ? null
+            : await prisma.systemCheckpoint.findUnique({
+                  where: { key: SMALL_TRADE_BUFFERING_KEY_LEGACY }
+              })
+        const smallTradeBuffering = ((bufferingRowPaper ?? bufferingRowLegacy)?.valueJson ||
+            {}) as Record<string, any>
 
         return NextResponse.json(
             {

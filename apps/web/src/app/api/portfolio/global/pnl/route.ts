@@ -29,7 +29,7 @@ export async function GET(request: NextRequest) {
         const range = parseRange(request.nextUrl.searchParams.get("range"))
 
         const latestSnapshot = await prisma.portfolioSnapshot.findFirst({
-            where: { portfolioScope: "EXEC_GLOBAL", followedUserId: null },
+            where: { tradingMode: "PAPER", portfolioScope: "EXEC_GLOBAL", followedUserId: null },
             orderBy: { bucketTime: "desc" }
         })
 
@@ -58,6 +58,7 @@ export async function GET(request: NextRequest) {
 
         const snapshots = await prisma.portfolioSnapshot.findMany({
             where: {
+                tradingMode: "PAPER",
                 portfolioScope: "EXEC_GLOBAL",
                 followedUserId: null,
                 bucketTime: { gte: startTime, lte: endTime }
@@ -97,4 +98,3 @@ export async function GET(request: NextRequest) {
         return NextResponse.json({ error: "Internal Server Error" }, { status: 500 })
     }
 }
-

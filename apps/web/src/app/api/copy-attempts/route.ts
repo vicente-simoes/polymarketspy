@@ -31,6 +31,7 @@ export async function GET(request: Request) {
 
     try {
         const where = {
+            tradingMode: "PAPER" as const,
             portfolioScope: "EXEC_GLOBAL" as const,
             ...(decision && { decision: decision as any }),
             ...(assetId && { groupKey: { contains: `:${assetId}:` } })
@@ -59,6 +60,7 @@ export async function GET(request: Request) {
         const refIds = attempts.map((attempt) => `copy:${attempt.id}`)
         const ledgerEntries = await prisma.ledgerEntry.findMany({
             where: {
+                tradingMode: "PAPER",
                 refId: { in: refIds },
                 entryType: "TRADE_FILL"
             },

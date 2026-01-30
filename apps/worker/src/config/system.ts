@@ -14,6 +14,11 @@ const DEFAULT_SYSTEM_CONFIG: SystemConfig = {
     backfillMinutes: 15,
     // Default bankroll: 0 (starts at 0 equity, positions add value, cash subtracts)
     initialBankrollMicros: 0,
+
+    // Paper/Live trading switches
+    paperTradingEnabled: true,
+    liveTradingEnabled: false,
+    liveTradingReadOnlyEnabled: false,
 };
 
 const CACHE_TTL_MS = 30_000;

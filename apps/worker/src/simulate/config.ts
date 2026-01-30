@@ -5,19 +5,21 @@
  * in the database, but these are the defaults.
  */
 
-import { ConfigScope } from "@prisma/client";
+import { ConfigScope, TradingMode } from "@prisma/client";
 import { prisma } from "../db/prisma.js";
 import { createChildLogger } from "../log/logger.js";
 import {
     GuardrailsSchema,
     SizingSchemaBase,
     SmallTradeBufferingSchema,
+    LiveGuardrailsSchema,
     SmallTradeNettingMode,
     SizingMode,
     BudgetEnforcement,
     type Guardrails,
     type Sizing,
     type SmallTradeBuffering,
+    type LiveGuardrails,
 } from "@copybot/shared";
 
 const logger = createChildLogger({ module: "simulation-config" });
@@ -84,25 +86,38 @@ export const DEFAULT_SMALL_TRADE_BUFFERING: SmallTradeBuffering = {
 };
 
 /**
+ * Default live guardrails config.
+ */
+export const DEFAULT_LIVE_GUARDRAILS: LiveGuardrails = {
+    liveSlippageBpsBuy: 50, // 0.5%
+    liveSlippageBpsSell: 100, // 1.0% - more tolerant to not miss exits
+    liveBookFreshnessMs: 2000,
+    liveBookWaitMs: 500,
+    liveOrderType: "FAK",
+};
+
+/**
+ * Config result type.
+ */
+interface ConfigResult {
+    guardrails: Guardrails;
+    sizing: Sizing;
+    smallTradeBuffering: SmallTradeBuffering;
+    liveGuardrails?: LiveGuardrails;
+    loadedAt: Date;
+}
+
+/**
  * Cache for effective configs (refreshed on demand).
+ * Keys include tradingMode for mode-aware caching.
  */
 interface ConfigCache {
-    global: {
-        guardrails: Guardrails;
-        sizing: Sizing;
-        smallTradeBuffering: SmallTradeBuffering;
-        loadedAt: Date;
-    } | null;
-    perUser: Map<string, {
-        guardrails: Guardrails;
-        sizing: Sizing;
-        smallTradeBuffering: SmallTradeBuffering;
-        loadedAt: Date;
-    }>;
+    global: Map<TradingMode, ConfigResult>;
+    perUser: Map<string, ConfigResult>; // Key format: `${followedUserId}:${tradingMode}`
 }
 
 const cache: ConfigCache = {
-    global: null,
+    global: new Map(),
     perUser: new Map(),
 };
 
@@ -119,14 +134,21 @@ function isCacheValid(loadedAt: Date): boolean {
 /**
  * Load global config from database.
  */
-async function loadGlobalConfig(): Promise<{
+async function loadGlobalConfig(
+    tradingMode: TradingMode = TradingMode.PAPER
+): Promise<{
     guardrails: Guardrails;
     sizing: Sizing;
     smallTradeBuffering: SmallTradeBuffering;
+    liveGuardrails?: LiveGuardrails;
 }> {
-    // Load guardrails
+    // Load guardrails - filter by tradingMode
     const guardrailRow = await prisma.guardrailConfig.findFirst({
-        where: { scope: ConfigScope.GLOBAL, followedUserId: null },
+        where: {
+            scope: ConfigScope.GLOBAL,
+            followedUserId: null,
+            tradingMode,
+        },
         orderBy: { updatedAt: "desc" },
     });
 
@@ -136,13 +158,17 @@ async function loadGlobalConfig(): Promise<{
             const parsed = GuardrailsSchema.partial().parse(guardrailRow.configJson);
             guardrails = { ...DEFAULT_GUARDRAILS, ...parsed };
         } catch (err) {
-            logger.warn({ err }, "Failed to parse global guardrails, using defaults");
+            logger.warn({ err, tradingMode }, "Failed to parse global guardrails, using defaults");
         }
     }
 
-    // Load sizing
+    // Load sizing - filter by tradingMode
     const sizingRow = await prisma.copySizingConfig.findFirst({
-        where: { scope: ConfigScope.GLOBAL, followedUserId: null },
+        where: {
+            scope: ConfigScope.GLOBAL,
+            followedUserId: null,
+            tradingMode,
+        },
         orderBy: { updatedAt: "desc" },
     });
 
@@ -152,43 +178,86 @@ async function loadGlobalConfig(): Promise<{
             const parsed = SizingSchemaBase.partial().parse(sizingRow.configJson);
             sizing = { ...DEFAULT_SIZING, ...parsed };
         } catch (err) {
-            logger.warn({ err }, "Failed to parse global sizing, using defaults");
+            logger.warn({ err, tradingMode }, "Failed to parse global sizing, using defaults");
         }
     }
 
-    // Load small trade buffering config from SystemCheckpoint
+    // Load small trade buffering config from SystemCheckpoint (mode-aware key)
+    const bufferingKey = tradingMode === TradingMode.LIVE
+        ? "config:smallTradeBuffering:LIVE"
+        : "config:smallTradeBuffering:PAPER";
     const bufferingRow = await prisma.systemCheckpoint.findUnique({
-        where: { key: "config:smallTradeBuffering" },
+        where: { key: bufferingKey },
     });
 
+    // Fall back to legacy key for PAPER mode
     let smallTradeBuffering = DEFAULT_SMALL_TRADE_BUFFERING;
     if (bufferingRow) {
         try {
             const parsed = SmallTradeBufferingSchema.partial().parse(bufferingRow.valueJson);
             smallTradeBuffering = { ...DEFAULT_SMALL_TRADE_BUFFERING, ...parsed };
         } catch (err) {
-            logger.warn({ err }, "Failed to parse small trade buffering config, using defaults");
+            logger.warn({ err, tradingMode }, "Failed to parse small trade buffering config, using defaults");
+        }
+    } else if (tradingMode === TradingMode.PAPER) {
+        // Fall back to legacy key for backward compatibility
+        const legacyRow = await prisma.systemCheckpoint.findUnique({
+            where: { key: "config:smallTradeBuffering" },
+        });
+        if (legacyRow) {
+            try {
+                const parsed = SmallTradeBufferingSchema.partial().parse(legacyRow.valueJson);
+                smallTradeBuffering = { ...DEFAULT_SMALL_TRADE_BUFFERING, ...parsed };
+            } catch (err) {
+                logger.warn({ err }, "Failed to parse legacy small trade buffering config");
+            }
         }
     }
 
-    return { guardrails, sizing, smallTradeBuffering };
+    // Load live guardrails (only for LIVE mode)
+    let liveGuardrails: LiveGuardrails | undefined;
+    if (tradingMode === TradingMode.LIVE) {
+        const liveGuardrailsRow = await prisma.systemCheckpoint.findUnique({
+            where: { key: "config:liveGuardrails" },
+        });
+
+        liveGuardrails = DEFAULT_LIVE_GUARDRAILS;
+        if (liveGuardrailsRow) {
+            try {
+                const parsed = LiveGuardrailsSchema.partial().parse(liveGuardrailsRow.valueJson);
+                liveGuardrails = { ...DEFAULT_LIVE_GUARDRAILS, ...parsed };
+            } catch (err) {
+                logger.warn({ err }, "Failed to parse live guardrails config, using defaults");
+            }
+        }
+    }
+
+    return { guardrails, sizing, smallTradeBuffering, liveGuardrails };
 }
 
 /**
  * Load per-user config overrides from database.
- * Note: smallTradeBuffering is global-only for now, but structure supports per-user in future.
+ * Note: smallTradeBuffering and liveGuardrails are global-only for now.
  */
 async function loadUserConfig(
     followedUserId: string,
     globalGuardrails: Guardrails,
     globalSizing: Sizing,
-    globalSmallTradeBuffering: SmallTradeBuffering
-): Promise<{ guardrails: Guardrails; sizing: Sizing; smallTradeBuffering: SmallTradeBuffering }> {
-    // Load user-specific guardrails
+    globalSmallTradeBuffering: SmallTradeBuffering,
+    globalLiveGuardrails: LiveGuardrails | undefined,
+    tradingMode: TradingMode = TradingMode.PAPER
+): Promise<{
+    guardrails: Guardrails;
+    sizing: Sizing;
+    smallTradeBuffering: SmallTradeBuffering;
+    liveGuardrails?: LiveGuardrails;
+}> {
+    // Load user-specific guardrails - filter by tradingMode
     const guardrailRow = await prisma.guardrailConfig.findFirst({
         where: {
             scope: ConfigScope.USER,
             followedUserId,
+            tradingMode,
         },
         orderBy: { updatedAt: "desc" },
     });
@@ -199,15 +268,16 @@ async function loadUserConfig(
             const parsed = GuardrailsSchema.partial().parse(guardrailRow.configJson);
             guardrails = { ...globalGuardrails, ...parsed };
         } catch (err) {
-            logger.warn({ err, followedUserId }, "Failed to parse user guardrails, using global");
+            logger.warn({ err, followedUserId, tradingMode }, "Failed to parse user guardrails, using global");
         }
     }
 
-    // Load user-specific sizing
+    // Load user-specific sizing - filter by tradingMode
     const sizingRow = await prisma.copySizingConfig.findFirst({
         where: {
             scope: ConfigScope.USER,
             followedUserId,
+            tradingMode,
         },
         orderBy: { updatedAt: "desc" },
     });
@@ -220,44 +290,51 @@ async function loadUserConfig(
             const { budgetedDynamicEnabled: _ignored, ...userSizingOverrides } = parsed;
             sizing = { ...globalSizing, ...userSizingOverrides };
         } catch (err) {
-            logger.warn({ err, followedUserId }, "Failed to parse user sizing, using global");
+            logger.warn({ err, followedUserId, tradingMode }, "Failed to parse user sizing, using global");
         }
     }
 
-    // For now, small trade buffering is global-only (no per-user overrides)
-    // Future: could load from a per-user SystemCheckpoint or new table
+    // smallTradeBuffering and liveGuardrails are global-only (no per-user overrides)
     const smallTradeBuffering = globalSmallTradeBuffering;
+    const liveGuardrails = globalLiveGuardrails;
 
-    return { guardrails, sizing, smallTradeBuffering };
+    return { guardrails, sizing, smallTradeBuffering, liveGuardrails };
 }
 
 /**
  * Get effective guardrails, sizing, and small trade buffering for global portfolio.
+ * @param tradingMode - Trading mode (PAPER or LIVE), defaults to PAPER
  */
-export async function getGlobalConfig(): Promise<{
+export async function getGlobalConfig(
+    tradingMode: TradingMode = TradingMode.PAPER
+): Promise<{
     guardrails: Guardrails;
     sizing: Sizing;
     smallTradeBuffering: SmallTradeBuffering;
+    liveGuardrails?: LiveGuardrails;
 }> {
     // Check cache
-    if (cache.global && isCacheValid(cache.global.loadedAt)) {
+    const cached = cache.global.get(tradingMode);
+    if (cached && isCacheValid(cached.loadedAt)) {
         return {
-            guardrails: cache.global.guardrails,
-            sizing: cache.global.sizing,
-            smallTradeBuffering: cache.global.smallTradeBuffering,
+            guardrails: cached.guardrails,
+            sizing: cached.sizing,
+            smallTradeBuffering: cached.smallTradeBuffering,
+            liveGuardrails: cached.liveGuardrails,
         };
     }
 
     // Load from DB
-    const config = await loadGlobalConfig();
+    const config = await loadGlobalConfig(tradingMode);
 
     // Update cache
-    cache.global = {
+    cache.global.set(tradingMode, {
         guardrails: config.guardrails,
         sizing: config.sizing,
         smallTradeBuffering: config.smallTradeBuffering,
+        liveGuardrails: config.liveGuardrails,
         loadedAt: new Date(),
-    };
+    });
 
     return config;
 }
@@ -265,36 +342,51 @@ export async function getGlobalConfig(): Promise<{
 /**
  * Get effective guardrails, sizing, and small trade buffering for a specific user.
  * Merges global config with user-specific overrides.
+ * @param followedUserId - The user to get config for
+ * @param tradingMode - Trading mode (PAPER or LIVE), defaults to PAPER
  */
 export async function getUserConfig(
-    followedUserId: string
-): Promise<{ guardrails: Guardrails; sizing: Sizing; smallTradeBuffering: SmallTradeBuffering }> {
+    followedUserId: string,
+    tradingMode: TradingMode = TradingMode.PAPER
+): Promise<{
+    guardrails: Guardrails;
+    sizing: Sizing;
+    smallTradeBuffering: SmallTradeBuffering;
+    liveGuardrails?: LiveGuardrails;
+}> {
+    // Build cache key
+    const cacheKey = `${followedUserId}:${tradingMode}`;
+
     // Check cache
-    const cached = cache.perUser.get(followedUserId);
+    const cached = cache.perUser.get(cacheKey);
     if (cached && isCacheValid(cached.loadedAt)) {
         return {
             guardrails: cached.guardrails,
             sizing: cached.sizing,
             smallTradeBuffering: cached.smallTradeBuffering,
+            liveGuardrails: cached.liveGuardrails,
         };
     }
 
     // Load global config first
-    const global = await getGlobalConfig();
+    const global = await getGlobalConfig(tradingMode);
 
     // Load user overrides
     const config = await loadUserConfig(
         followedUserId,
         global.guardrails,
         global.sizing,
-        global.smallTradeBuffering
+        global.smallTradeBuffering,
+        global.liveGuardrails,
+        tradingMode
     );
 
     // Update cache
-    cache.perUser.set(followedUserId, {
+    cache.perUser.set(cacheKey, {
         guardrails: config.guardrails,
         sizing: config.sizing,
         smallTradeBuffering: config.smallTradeBuffering,
+        liveGuardrails: config.liveGuardrails,
         loadedAt: new Date(),
     });
 
@@ -305,7 +397,7 @@ export async function getUserConfig(
  * Clear config cache (call after config updates).
  */
 export function clearConfigCache(): void {
-    cache.global = null;
+    cache.global.clear();
     cache.perUser.clear();
     logger.debug("Config cache cleared");
 }

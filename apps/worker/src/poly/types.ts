@@ -48,6 +48,31 @@ export const PolymarketTradeSchema = z.object({
 
 export type PolymarketTrade = z.infer<typeof PolymarketTradeSchema>;
 
+/**
+ * Polymarket Data API position schema.
+ *
+ * The /positions endpoint shape is not strictly versioned, so we accept multiple
+ * field aliases and ignore unknown fields.
+ *
+ * We only require enough data to build a tokenId -> share balance map.
+ */
+export const PolymarketPositionSchema = z
+    .object({
+        // Token identifiers (aliases across API versions)
+        assetId: z.string().optional().nullable(),
+        asset_id: z.string().optional().nullable(),
+        tokenId: z.string().optional().nullable(),
+        token_id: z.string().optional().nullable(),
+
+        // Position size (shares), typically a decimal string
+        size: NumericSchema.optional().nullable(),
+        shares: NumericSchema.optional().nullable(),
+        quantity: NumericSchema.optional().nullable(),
+    })
+    .passthrough();
+
+export type PolymarketPosition = z.infer<typeof PolymarketPositionSchema>;
+
 // Handle empty string or null from API by allowing optional BUY/SELL
 // Using union to accept empty strings and converting them in app code
 const ActivitySideSchema = z

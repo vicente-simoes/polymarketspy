@@ -171,9 +171,36 @@ export const SystemConfigSchema = z.object({
     backfillMinutes: z.number().int().default(15),
     /** Initial paper trading bankroll in micros (default: 10000_000_000 = $10,000) */
     initialBankrollMicros: z.number().int().default(10_000_000_000),
+
+    // Paper/Live trading switches
+    /** Whether paper trading is enabled (default: true) */
+    paperTradingEnabled: z.boolean().default(true),
+    /** Whether live trading order placement is enabled (default: false) */
+    liveTradingEnabled: z.boolean().default(false),
+    /** Whether live read-only monitoring is enabled when placement is OFF (default: false) */
+    liveTradingReadOnlyEnabled: z.boolean().default(false),
 });
 
 export type SystemConfig = z.infer<typeof SystemConfigSchema>;
+
+/**
+ * Live trading specific guardrails schema.
+ * These settings control live order placement behavior.
+ */
+export const LiveGuardrailsSchema = z.object({
+    /** Slippage tolerance for BUY orders in bps (default: 50 = 0.5%) */
+    liveSlippageBpsBuy: z.number().int().min(0).default(50),
+    /** Slippage tolerance for SELL orders in bps (default: 100 = 1.0%) - more tolerant to not miss exits */
+    liveSlippageBpsSell: z.number().int().min(0).default(100),
+    /** Max book age in ms for live execution (default: 2000) */
+    liveBookFreshnessMs: z.number().int().min(100).default(2000),
+    /** Max wait time for fresh book in ms (default: 500) */
+    liveBookWaitMs: z.number().int().min(0).default(500),
+    /** Default order type for live trades */
+    liveOrderType: z.enum(["FAK", "FOK", "GTC"]).default("FAK"),
+});
+
+export type LiveGuardrails = z.infer<typeof LiveGuardrailsSchema>;
 
 /**
  * Netting mode for small trade buffering.

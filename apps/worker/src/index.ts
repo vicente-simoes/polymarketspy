@@ -20,6 +20,12 @@ import { loadResolvedTokensFromRedis, setRedisClient } from "./poly/index.js";
 import { stopBookService } from "./simulate/bookService.js";
 import { env } from "./config/env.js";
 import { startSettlementLoop, stopSettlementLoop } from "./settlement.js";
+import {
+    startLiveReconciliationLoops,
+    startUserChannelWs,
+    stopLiveReconciliationLoops,
+    stopUserChannelWs,
+} from "./live/index.js";
 
 async function main() {
     logger.info("Worker starting...");
@@ -97,11 +103,21 @@ async function main() {
     // Start settlement loop (closes resolved positions and credits payout)
     startSettlementLoop();
 
+    // Start live user-channel WS (orders + fills) if live is configured
+    if (env.POLYMARKET_LIVE_PRIVATE_KEY) {
+        startLiveReconciliationLoops();
+        void startUserChannelWs().catch((err) => {
+            logger.error({ err }, "Failed to start user channel WebSocket");
+        });
+    }
+
     logger.info("Worker started successfully");
 
     // Graceful shutdown
     const shutdown = async () => {
         logger.info("Shutting down...");
+        stopUserChannelWs();
+        stopLiveReconciliationLoops();
         stopPolling();
         stopSnapshotLoops();
         stopSettlementLoop();

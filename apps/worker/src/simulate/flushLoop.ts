@@ -9,7 +9,7 @@
  * SKIP row is created for visibility in the dashboard.
  */
 
-import { TradeSide, CopyDecision, PortfolioScope } from "@prisma/client";
+import { TradeSide, CopyDecision, PortfolioScope, TradingMode } from "@prisma/client";
 import { ReasonCodes } from "@copybot/shared";
 import { createChildLogger } from "../log/logger.js";
 import { prisma } from "../db/prisma.js";
@@ -109,6 +109,7 @@ async function recordSkippedFlush(bucket: Bucket, reason: string): Promise<void>
         // Check if already recorded (idempotency)
         const existing = await prisma.copyAttempt.findFirst({
             where: {
+                tradingMode: TradingMode.PAPER,
                 portfolioScope: PortfolioScope.EXEC_GLOBAL,
                 followedUserId: null,
                 groupKey,
@@ -123,6 +124,7 @@ async function recordSkippedFlush(bucket: Bucket, reason: string): Promise<void>
         // Create SKIP record
         await prisma.copyAttempt.create({
             data: {
+                tradingMode: TradingMode.PAPER,
                 portfolioScope: PortfolioScope.EXEC_GLOBAL,
                 followedUserId: null,
                 groupKey,

@@ -286,20 +286,61 @@ export declare const SystemConfigSchema: z.ZodObject<{
     backfillMinutes: z.ZodDefault<z.ZodNumber>;
     /** Initial paper trading bankroll in micros (default: 10000_000_000 = $10,000) */
     initialBankrollMicros: z.ZodDefault<z.ZodNumber>;
+    /** Whether paper trading is enabled (default: true) */
+    paperTradingEnabled: z.ZodDefault<z.ZodBoolean>;
+    /** Whether live trading order placement is enabled (default: false) */
+    liveTradingEnabled: z.ZodDefault<z.ZodBoolean>;
+    /** Whether live read-only monitoring is enabled when placement is OFF (default: false) */
+    liveTradingReadOnlyEnabled: z.ZodDefault<z.ZodBoolean>;
 }, "strip", z.ZodTypeAny, {
     copyEngineEnabled: boolean;
     aggregationWindowMs: number;
     pollingIntervalMs: number;
     backfillMinutes: number;
     initialBankrollMicros: number;
+    paperTradingEnabled: boolean;
+    liveTradingEnabled: boolean;
+    liveTradingReadOnlyEnabled: boolean;
 }, {
     copyEngineEnabled?: boolean | undefined;
     aggregationWindowMs?: number | undefined;
     pollingIntervalMs?: number | undefined;
     backfillMinutes?: number | undefined;
     initialBankrollMicros?: number | undefined;
+    paperTradingEnabled?: boolean | undefined;
+    liveTradingEnabled?: boolean | undefined;
+    liveTradingReadOnlyEnabled?: boolean | undefined;
 }>;
 export type SystemConfig = z.infer<typeof SystemConfigSchema>;
+/**
+ * Live trading specific guardrails schema.
+ * These settings control live order placement behavior.
+ */
+export declare const LiveGuardrailsSchema: z.ZodObject<{
+    /** Slippage tolerance for BUY orders in bps (default: 50 = 0.5%) */
+    liveSlippageBpsBuy: z.ZodDefault<z.ZodNumber>;
+    /** Slippage tolerance for SELL orders in bps (default: 100 = 1.0%) - more tolerant to not miss exits */
+    liveSlippageBpsSell: z.ZodDefault<z.ZodNumber>;
+    /** Max book age in ms for live execution (default: 2000) */
+    liveBookFreshnessMs: z.ZodDefault<z.ZodNumber>;
+    /** Max wait time for fresh book in ms (default: 500) */
+    liveBookWaitMs: z.ZodDefault<z.ZodNumber>;
+    /** Default order type for live trades */
+    liveOrderType: z.ZodDefault<z.ZodEnum<["FAK", "FOK", "GTC"]>>;
+}, "strip", z.ZodTypeAny, {
+    liveSlippageBpsBuy: number;
+    liveSlippageBpsSell: number;
+    liveBookFreshnessMs: number;
+    liveBookWaitMs: number;
+    liveOrderType: "FAK" | "FOK" | "GTC";
+}, {
+    liveSlippageBpsBuy?: number | undefined;
+    liveSlippageBpsSell?: number | undefined;
+    liveBookFreshnessMs?: number | undefined;
+    liveBookWaitMs?: number | undefined;
+    liveOrderType?: "FAK" | "FOK" | "GTC" | undefined;
+}>;
+export type LiveGuardrails = z.infer<typeof LiveGuardrailsSchema>;
 /**
  * Netting mode for small trade buffering.
  * - sameSideOnly: Buffer only same-side trades; opposite side flushes current bucket

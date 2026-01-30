@@ -179,6 +179,8 @@ export interface PortfolioState {
     totalExposureMicros: bigint;
     exposureByMarket: Map<string, bigint>;
     exposureByUser: Map<string, bigint>;
+    /** Current net position by asset (share-micros). */
+    positionByAssetId: Map<string, bigint>;
     dailyPnlMicros: bigint;
     weeklyPnlMicros: bigint;
     peakEquityMicros: bigint;

@@ -7,6 +7,8 @@ import { getAggregateStats } from "../reconcile/index.js";
 import { getBookServiceStats } from "../simulate/bookService.js";
 import { getGlobalConfig } from "../simulate/config.js";
 import { getBufferStats } from "../simulate/smallTradeBuffer.js";
+import { getUserChannelWsStatus } from "../live/userChannelWs.js";
+import { getLiveReconcileStatus } from "../live/reconcile.js";
 import type { SmallTradeNettingModeType } from "@copybot/shared";
 
 interface LatencyMetrics {
@@ -33,6 +35,25 @@ interface ClobBookMetrics {
     cacheSize: number;
     subscribedCount: number;
     freshCount: number;
+}
+
+/**
+ * Polymarket user-channel WS client health/metrics.
+ */
+interface UserChannelWsHealth {
+    running: boolean;
+    connected: boolean;
+    metrics: {
+        connectCount: number;
+        disconnectCount: number;
+        messageCount: number;
+        errorCount: number;
+        orderUpdateCount: number;
+        fillUpdateCount: number;
+        lastConnectedAt: string | null;
+        lastDisconnectedAt: string | null;
+        lastMessageAt: string | null;
+    } | null;
 }
 
 /**
@@ -71,6 +92,8 @@ interface HealthStatus {
     lastCanonicalEventTime: string | null;
     alchemyWsConnected: boolean;
     clobBook: ClobBookMetrics;
+    userChannelWs: UserChannelWsHealth;
+    liveReconcile: ReturnType<typeof getLiveReconcileStatus>;
     smallTradeBuffering: SmallTradeBufferingHealth;
     queueDepths: Record<string, number>;
     dbConnected: boolean;
@@ -125,6 +148,33 @@ async function getHealthStatus(): Promise<HealthStatus> {
         freshCount: bookStats?.freshCount ?? 0,
     };
 
+    const userWsStatus = getUserChannelWsStatus();
+    const userChannelWs: UserChannelWsHealth = {
+        running: userWsStatus?.running ?? false,
+        connected: userWsStatus?.connected ?? false,
+        metrics: userWsStatus?.metrics
+            ? {
+                  connectCount: userWsStatus.metrics.connectCount,
+                  disconnectCount: userWsStatus.metrics.disconnectCount,
+                  messageCount: userWsStatus.metrics.messageCount,
+                  errorCount: userWsStatus.metrics.errorCount,
+                  orderUpdateCount: userWsStatus.metrics.orderUpdateCount,
+                  fillUpdateCount: userWsStatus.metrics.fillUpdateCount,
+                  lastConnectedAt: userWsStatus.metrics.lastConnectedAt
+                      ? new Date(userWsStatus.metrics.lastConnectedAt).toISOString()
+                      : null,
+                  lastDisconnectedAt: userWsStatus.metrics.lastDisconnectedAt
+                      ? new Date(userWsStatus.metrics.lastDisconnectedAt).toISOString()
+                      : null,
+                  lastMessageAt: userWsStatus.metrics.lastMessageAt
+                      ? new Date(userWsStatus.metrics.lastMessageAt).toISOString()
+                      : null,
+              }
+            : null,
+    };
+
+    const liveReconcile = getLiveReconcileStatus();
+
     // Get small trade buffering config and live stats
     const globalConfig = await getGlobalConfig();
     const bufferingConfig = globalConfig.smallTradeBuffering;
@@ -168,6 +218,8 @@ async function getHealthStatus(): Promise<HealthStatus> {
         lastCanonicalEventTime: lastCanonicalEventTime?.toISOString() ?? null,
         alchemyWsConnected,
         clobBook,
+        userChannelWs,
+        liveReconcile,
         smallTradeBuffering,
         queueDepths,
         dbConnected,

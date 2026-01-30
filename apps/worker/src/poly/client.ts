@@ -8,6 +8,8 @@ import {
     type PolymarketTrade,
     PolymarketActivitySchema,
     type PolymarketActivity,
+    PolymarketPositionSchema,
+    type PolymarketPosition,
     type OrderBook,
     OrderBookSchema,
     type MarketInfo,
@@ -204,6 +206,55 @@ export async function fetchWalletTrades(
         return trades;
     } catch (err) {
         logger.error({ err, wallet: walletAddress }, "Failed to fetch wallet trades");
+        throw err;
+    }
+}
+
+type PolymarketPositionsResponse =
+    | PolymarketPosition[]
+    | { positions: PolymarketPosition[] }
+    | { data: PolymarketPosition[] };
+
+const PolymarketPositionsResponseSchema: z.ZodType<PolymarketPositionsResponse> = z.union([
+    z.array(PolymarketPositionSchema),
+    z.object({ positions: z.array(PolymarketPositionSchema) }).passthrough(),
+    z.object({ data: z.array(PolymarketPositionSchema) }).passthrough(),
+]);
+
+/**
+ * Fetch positions for a wallet address.
+ *
+ * This is used for live reconciliation (authoritative positions snapshot).
+ */
+export async function fetchWalletPositions(
+    walletAddress: string,
+    options?: { limit?: number }
+): Promise<PolymarketPosition[]> {
+    const params: Record<string, string> = {
+        user: walletAddress,
+    };
+
+    if (options?.limit) {
+        params.limit = options.limit.toString();
+    }
+
+    try {
+        const response = await dataApiRequest(
+            "/positions",
+            PolymarketPositionsResponseSchema,
+            params
+        );
+
+        const positions = Array.isArray(response)
+            ? response
+            : "positions" in response
+              ? response.positions
+              : response.data;
+
+        logger.debug({ wallet: walletAddress, count: positions.length }, "Fetched wallet positions");
+        return positions;
+    } catch (err) {
+        logger.error({ err, wallet: walletAddress }, "Failed to fetch wallet positions");
         throw err;
     }
 }

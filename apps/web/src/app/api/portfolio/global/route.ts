@@ -16,7 +16,7 @@ export async function GET() {
         }) => Number(snapshot.realizedPnlMicros + snapshot.unrealizedPnlMicros) / 1_000_000
 
         const guardrails = await prisma.guardrailConfig.findFirst({
-            where: { scope: "GLOBAL", followedUserId: null },
+            where: { scope: "GLOBAL", followedUserId: null, tradingMode: "PAPER" },
             orderBy: { updatedAt: "desc" }
         })
         const guardrailsConfig = (guardrails?.configJson || {}) as Record<string, any>
@@ -30,7 +30,7 @@ export async function GET() {
                 : 1200
 
         const latestSnapshot = await prisma.portfolioSnapshot.findFirst({
-            where: { portfolioScope: "EXEC_GLOBAL", followedUserId: null },
+            where: { tradingMode: "PAPER", portfolioScope: "EXEC_GLOBAL", followedUserId: null },
             orderBy: { bucketTime: "desc" }
         })
 
@@ -38,6 +38,7 @@ export async function GET() {
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
         const equityCurveSnapshots = await prisma.portfolioSnapshot.findMany({
             where: {
+                tradingMode: "PAPER",
                 portfolioScope: "EXEC_GLOBAL",
                 followedUserId: null,
                 bucketTime: { gte: thirtyDaysAgo }
@@ -64,7 +65,11 @@ export async function GET() {
 
         const positionsRaw = await prisma.ledgerEntry.groupBy({
             by: ["assetId"],
-            where: { portfolioScope: "EXEC_GLOBAL", assetId: { not: null } },
+            where: {
+                tradingMode: "PAPER",
+                portfolioScope: "EXEC_GLOBAL",
+                assetId: { not: null }
+            },
             _sum: {
                 shareDeltaMicros: true,
                 cashDeltaMicros: true
@@ -184,6 +189,7 @@ export async function GET() {
 
         const userSnapshots = await prisma.portfolioSnapshot.findMany({
             where: {
+                tradingMode: "PAPER",
                 portfolioScope: "EXEC_GLOBAL",
                 followedUserId: { not: null }
             },
@@ -259,6 +265,7 @@ export async function GET() {
                 ? await Promise.all([
                       prisma.portfolioSnapshot.findFirst({
                           where: {
+                              tradingMode: "PAPER",
                               portfolioScope: "EXEC_GLOBAL",
                               followedUserId: null,
                               bucketTime: {
@@ -269,6 +276,7 @@ export async function GET() {
                       }),
                       prisma.portfolioSnapshot.findFirst({
                           where: {
+                              tradingMode: "PAPER",
                               portfolioScope: "EXEC_GLOBAL",
                               followedUserId: null,
                               bucketTime: {
@@ -279,6 +287,7 @@ export async function GET() {
                       }),
                       prisma.portfolioSnapshot.findFirst({
                           where: {
+                              tradingMode: "PAPER",
                               portfolioScope: "EXEC_GLOBAL",
                               followedUserId: null,
                               bucketTime: {
@@ -291,6 +300,7 @@ export async function GET() {
                       }),
                       prisma.portfolioSnapshot.findFirst({
                           where: {
+                              tradingMode: "PAPER",
                               portfolioScope: "EXEC_GLOBAL",
                               followedUserId: null,
                               bucketTime: {

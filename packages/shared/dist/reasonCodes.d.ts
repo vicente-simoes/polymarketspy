@@ -41,5 +41,27 @@ export declare const ReasonCodes: {
     readonly LEADER_TRADE_BELOW_MIN_NOTIONAL: "LEADER_TRADE_BELOW_MIN_NOTIONAL";
     /** HARD budget enforcement: exposure would exceed budget allocation */
     readonly BUDGET_HARD_CAP_EXCEEDED: "BUDGET_HARD_CAP_EXCEEDED";
+    /** Order book not fresh enough for live execution */
+    readonly LIVE_NO_FRESH_BOOK: "LIVE_NO_FRESH_BOOK";
+    /** Order would not be marketable within price bounds */
+    readonly LIVE_NOT_MARKETABLE_WITHIN_BOUNDS: "LIVE_NOT_MARKETABLE_WITHIN_BOUNDS";
+    /** Order not marketable after tick rounding */
+    readonly LIVE_NOT_MARKETABLE_AFTER_TICK_ROUNDING: "LIVE_NOT_MARKETABLE_AFTER_TICK_ROUNDING";
+    /** Order size below exchange minimum */
+    readonly LIVE_BELOW_MIN_ORDER_SIZE: "LIVE_BELOW_MIN_ORDER_SIZE";
+    /** Invalid tick size or step constraint */
+    readonly LIVE_INVALID_TICK_OR_STEP: "LIVE_INVALID_TICK_OR_STEP";
+    /** Insufficient cash to execute BUY */
+    readonly LIVE_INSUFFICIENT_CASH_TO_BUY: "LIVE_INSUFFICIENT_CASH_TO_BUY";
+    /** Insufficient position to execute SELL */
+    readonly LIVE_INSUFFICIENT_POSITION_TO_SELL: "LIVE_INSUFFICIENT_POSITION_TO_SELL";
+    /** Exchange rejected the order */
+    readonly LIVE_ORDER_REJECTED: "LIVE_ORDER_REJECTED";
+    /** Trading params (tick/min) not available for token */
+    readonly LIVE_TRADING_PARAMS_UNAVAILABLE: "LIVE_TRADING_PARAMS_UNAVAILABLE";
+    /** Live trading disabled globally */
+    readonly LIVE_TRADING_DISABLED: "LIVE_TRADING_DISABLED";
+    /** Live trading disabled for this user */
+    readonly LIVE_USER_DISABLED: "LIVE_USER_DISABLED";
 };
 export type ReasonCode = (typeof ReasonCodes)[keyof typeof ReasonCodes];

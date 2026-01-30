@@ -103,7 +103,7 @@ git pull
 
 
 cd docker
-docker compose down
+
 docker compose build --no-cache web worker
 docker compose up -d
 

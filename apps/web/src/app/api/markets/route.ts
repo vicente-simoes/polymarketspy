@@ -15,7 +15,7 @@ export async function GET(request: Request) {
 
     try {
         const guardrails = await prisma.guardrailConfig.findFirst({
-            where: { scope: "GLOBAL", followedUserId: null },
+            where: { scope: "GLOBAL", followedUserId: null, tradingMode: "PAPER" },
             orderBy: { updatedAt: "desc" }
         })
         const guardrailsConfig = (guardrails?.configJson || {}) as Record<string, any>
@@ -36,6 +36,7 @@ export async function GET(request: Request) {
             const positionsRaw = await prisma.ledgerEntry.groupBy({
                 by: ["assetId"],
                 where: {
+                    tradingMode: "PAPER",
                     portfolioScope: "EXEC_GLOBAL",
                     marketId
                 },
@@ -94,6 +95,7 @@ export async function GET(request: Request) {
 
             const copyLedger = await prisma.ledgerEntry.findMany({
                 where: {
+                    tradingMode: "PAPER",
                     portfolioScope: "EXEC_GLOBAL",
                     marketId,
                     entryType: "TRADE_FILL",
@@ -108,7 +110,7 @@ export async function GET(request: Request) {
 
             const copyAttempts = copyIds.length
                 ? await prisma.copyAttempt.findMany({
-                      where: { id: { in: copyIds } },
+                      where: { id: { in: copyIds }, tradingMode: "PAPER" },
                       select: {
                           id: true,
                           vwapPriceMicros: true,
@@ -152,7 +154,7 @@ export async function GET(request: Request) {
 
         const positionsRaw = await prisma.ledgerEntry.groupBy({
             by: ["marketId", "assetId"],
-            where: { portfolioScope: "EXEC_GLOBAL" },
+            where: { tradingMode: "PAPER", portfolioScope: "EXEC_GLOBAL" },
             _sum: {
                 shareDeltaMicros: true,
                 cashDeltaMicros: true
@@ -230,7 +232,7 @@ export async function POST(request: Request) {
         }
 
         const existing = await prisma.guardrailConfig.findFirst({
-            where: { scope: "GLOBAL", followedUserId: null },
+            where: { scope: "GLOBAL", followedUserId: null, tradingMode: "PAPER" },
             orderBy: { updatedAt: "desc" }
         })
 
@@ -252,7 +254,7 @@ export async function POST(request: Request) {
         }
 
         const result = await prisma.guardrailConfig.updateMany({
-            where: { scope: "GLOBAL", followedUserId: null },
+            where: { scope: "GLOBAL", followedUserId: null, tradingMode: "PAPER" },
             data: { configJson: updatedConfig }
         })
 
@@ -261,6 +263,7 @@ export async function POST(request: Request) {
                 data: {
                     scope: "GLOBAL",
                     followedUserId: null,
+                    tradingMode: "PAPER",
                     configJson: updatedConfig
                 }
             })

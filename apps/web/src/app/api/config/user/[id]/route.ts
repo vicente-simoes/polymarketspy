@@ -30,7 +30,7 @@ export async function POST(
             // NOTE: We may have multiple rows due to missing DB uniqueness constraints.
             // Always update ALL matching rows to keep reads consistent.
             const result = await prisma.guardrailConfig.updateMany({
-                where: { scope: "USER", followedUserId: userId },
+                where: { scope: "USER", followedUserId: userId, tradingMode: "PAPER" },
                 data: { configJson: guardrails }
             })
 
@@ -39,6 +39,7 @@ export async function POST(
                     data: {
                         scope: "USER",
                         followedUserId: userId,
+                        tradingMode: "PAPER",
                         configJson: guardrails
                     }
                 })
@@ -48,7 +49,7 @@ export async function POST(
         // Update User Sizing
         if (sizing) {
             const result = await prisma.copySizingConfig.updateMany({
-                where: { scope: "USER", followedUserId: userId },
+                where: { scope: "USER", followedUserId: userId, tradingMode: "PAPER" },
                 data: { configJson: sizing }
             })
 
@@ -57,6 +58,7 @@ export async function POST(
                     data: {
                         scope: "USER",
                         followedUserId: userId,
+                        tradingMode: "PAPER",
                         configJson: sizing
                     }
                 })
@@ -86,11 +88,11 @@ export async function GET(
         const { id: userId } = await params
         // Use deterministic ordering in case duplicates exist.
         const guardrails = await prisma.guardrailConfig.findFirst({
-            where: { scope: "USER", followedUserId: userId },
+            where: { scope: "USER", followedUserId: userId, tradingMode: "PAPER" },
             orderBy: { updatedAt: "desc" }
         })
         const sizing = await prisma.copySizingConfig.findFirst({
-            where: { scope: "USER", followedUserId: userId },
+            where: { scope: "USER", followedUserId: userId, tradingMode: "PAPER" },
             orderBy: { updatedAt: "desc" }
         })
 

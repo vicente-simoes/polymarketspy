@@ -1,4 +1,4 @@
-import { LedgerEntryType, PortfolioScope } from "@prisma/client";
+import { LedgerEntryType, PortfolioScope, TradingMode } from "@prisma/client";
 import { prisma } from "./db/prisma.js";
 import { createChildLogger } from "./log/logger.js";
 import { fetchResolvedTokenPayouts } from "./enrichment/gamma.js";
@@ -96,7 +96,8 @@ async function settleResolvedPositionsOnce(): Promise<void> {
             // 1) Burn shares to close the position.
             await prisma.ledgerEntry.upsert({
                 where: {
-                    portfolioScope_refId_entryType: {
+                    tradingMode_portfolioScope_refId_entryType: {
+                        tradingMode: TradingMode.PAPER,
                         portfolioScope: PortfolioScope.EXEC_GLOBAL,
                         refId: sharesRefId,
                         entryType: LedgerEntryType.SETTLEMENT,
@@ -122,7 +123,8 @@ async function settleResolvedPositionsOnce(): Promise<void> {
             if (cashDeltaMicros !== BigInt(0)) {
                 await prisma.ledgerEntry.upsert({
                     where: {
-                        portfolioScope_refId_entryType: {
+                        tradingMode_portfolioScope_refId_entryType: {
+                            tradingMode: TradingMode.PAPER,
                             portfolioScope: PortfolioScope.EXEC_GLOBAL,
                             refId: cashRefId,
                             entryType: LedgerEntryType.SETTLEMENT,

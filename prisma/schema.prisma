@@ -56,6 +56,34 @@ enum LedgerEntryType {
   SETTLEMENT
 }
 
+enum TradingMode {
+  PAPER
+  LIVE
+}
+
+enum LiveOrderStatus {
+  CREATED            // DB row created, not yet submitted
+  SUBMITTING         // API call in-flight
+  OPEN               // Accepted on exchange
+  PARTIAL            // Some fills, not fully filled
+  FILLED             // Fully filled
+  CANCELED           // Canceled (includes FAK remainder)
+  REJECTED           // Exchange rejected
+  FAILED             // System failed before submission
+  SUBMISSION_UNKNOWN // Uncertain submission outcome
+}
+
+enum LiveOrderType {
+  FAK  // Fill and Kill (default)
+  FOK  // Fill or Kill
+  GTC  // Good Till Canceled
+}
+
+enum LiveFillOrigin {
+  APP       // Placed by our app
+  EXTERNAL  // External activity on wallet
+}
+
 model FollowedUser {
   id            String   @id @default(uuid())
   label         String
@@ -66,6 +94,7 @@ model FollowedUser {
   guardrails    GuardrailConfig[]
   sizing        CopySizingConfig[]
   copyAttempts  CopyAttempt[]
+  liveOrders    LiveOrder[]
 }
 
 model FollowedUserProxyWallet {
@@ -81,6 +110,7 @@ model FollowedUserProxyWallet {
 model GuardrailConfig {
   id            String      @id @default(uuid())
   scope         ConfigScope
+  tradingMode   TradingMode @default(PAPER)
   followedUserId String?
   // stored as JSON; worker materializes effective config
   configJson     Json
@@ -90,11 +120,13 @@ model GuardrailConfig {
 
   @@index([scope])
   @@index([followedUserId])
+  @@unique([tradingMode, scope, followedUserId])
 }
 
 model CopySizingConfig {
   id            String      @id @default(uuid())
   scope         ConfigScope
+  tradingMode   TradingMode @default(PAPER)
   followedUserId String?
   configJson     Json
   updatedAt      DateTime @updatedAt
@@ -103,6 +135,7 @@ model CopySizingConfig {
 
   @@index([scope])
   @@index([followedUserId])
+  @@unique([tradingMode, scope, followedUserId])
 }
 
 model Market {
@@ -207,6 +240,7 @@ model ActivityEvent {
 
 model CopyAttempt {
   id                      String      @id @default(uuid())
+  tradingMode             TradingMode @default(PAPER)
   portfolioScope          PortfolioScope
   followedUserId          String?
   groupKey                String      // deterministic key for aggregation group
@@ -229,10 +263,12 @@ model CopyAttempt {
 
   followedUser            FollowedUser? @relation(fields: [followedUserId], references: [id], onDelete: Cascade)
   fills                   ExecutableFill[]
+  liveOrders              LiveOrder[]
 
   @@index([portfolioScope, createdAt])
   @@index([followedUserId, createdAt])
-  @@unique([portfolioScope, followedUserId, groupKey])
+  @@index([tradingMode, createdAt])
+  @@unique([tradingMode, portfolioScope, followedUserId, groupKey])
 }
 
 model ExecutableFill {
@@ -249,6 +285,7 @@ model ExecutableFill {
 
 model LedgerEntry {
   id              String        @id @default(uuid())
+  tradingMode     TradingMode   @default(PAPER)
   portfolioScope  PortfolioScope
   followedUserId  String?
   marketId        String?
@@ -265,11 +302,13 @@ model LedgerEntry {
 
   @@index([portfolioScope, createdAt])
   @@index([assetId, createdAt])
-  @@unique([portfolioScope, refId, entryType])
+  @@index([tradingMode, portfolioScope, createdAt])
+  @@unique([tradingMode, portfolioScope, refId, entryType])
 }
 
 model PortfolioSnapshot {
   id              String        @id @default(uuid())
+  tradingMode     TradingMode   @default(PAPER)
   portfolioScope  PortfolioScope
   followedUserId  String?
   bucketTime      DateTime      // minute-bucketed timestamp
@@ -282,7 +321,8 @@ model PortfolioSnapshot {
 
   @@index([portfolioScope, bucketTime])
   @@index([followedUserId, bucketTime])
-  @@unique([portfolioScope, followedUserId, bucketTime])
+  @@index([tradingMode, portfolioScope, bucketTime])
+  @@unique([tradingMode, portfolioScope, followedUserId, bucketTime])
 }
 
 model MarketPriceSnapshot {
@@ -307,6 +347,123 @@ model AllowedAdminEmail {
   email     String   @unique
   createdAt DateTime @default(now())
 }
+
+// =====================
+// Live Trading Tables
+// =====================
+
+model LiveOrder {
+  id                String          @id @default(uuid())
+  copyAttemptId     String?
+  followedUserId    String?
+
+  // Idempotency & exchange IDs
+  idempotencyKey    String          @unique
+  clientOrderId     String?         @unique
+  clobOrderId       String?         @unique
+
+  // Order params
+  tokenId           String
+  side              TradeSide
+  orderType         LiveOrderType   @default(FAK)
+  limitPriceMicros  Int
+  sizeShareMicros   BigInt
+
+  // Decision snapshot (for audit)
+  bestBidMicrosAtDecision  Int?
+  bestAskMicrosAtDecision  Int?
+  bookSource               String?   // "WS" or "REST"
+  bookAgeMs                Int?
+
+  // Fill tracking
+  filledShareMicros    BigInt      @default(0)
+  filledNotionalMicros BigInt      @default(0)
+  avgFillPriceMicros   Int?
+
+  // Lifecycle
+  status            LiveOrderStatus @default(CREATED)
+  createdAt         DateTime        @default(now())
+  submittedAt       DateTime?
+  lastUpdateAt      DateTime?
+  finalizedAt       DateTime?
+
+  // Error tracking
+  lastErrorCode     String?
+  lastErrorMessage  String?
+
+  // Relations
+  copyAttempt       CopyAttempt?    @relation(fields: [copyAttemptId], references: [id], onDelete: SetNull)
+  followedUser      FollowedUser?   @relation(fields: [followedUserId], references: [id], onDelete: SetNull)
+  fills             LiveFill[]
+
+  @@index([status])
+  @@index([createdAt])
+  @@index([tokenId, createdAt])
+  @@index([followedUserId])
+}
+
+model LiveFill {
+  id              String          @id @default(uuid())
+  liveOrderId     String?         // Nullable for EXTERNAL fills
+
+  // Exchange IDs
+  tradeId         String          @unique
+  clobOrderId     String?
+
+  // Fill details
+  tokenId         String
+  side            TradeSide
+  priceMicros     Int
+  shareMicros     BigInt
+  notionalMicros  BigInt
+  feeMicros       BigInt?
+
+  // Metadata
+  origin          LiveFillOrigin  @default(APP)
+  matchedAt       DateTime
+  status          String          @default("MATCHED")
+
+  createdAt       DateTime        @default(now())
+
+  // Relations
+  liveOrder       LiveOrder?      @relation(fields: [liveOrderId], references: [id], onDelete: SetNull)
+
+  @@index([matchedAt])
+  @@index([clobOrderId])
+  @@index([tokenId, matchedAt])
+  @@index([origin])
+}
+
+model TokenTradingParamsCache {
+  tokenId                 String    @id
+  tickSizeMicros          Int
+  minOrderSizeShareMicros BigInt
+  sizeStepShareMicros     BigInt    @default(1)
+
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  @@index([updatedAt])
+}
+
+model RealPositionSnapshot {
+  id              String    @id @default(uuid())
+  bucketTime      DateTime  // Minute-bucketed
+  tokenId         String
+  shareMicros     BigInt
+
+  // Metadata
+  source          String    @default("RECONCILE")  // "RECONCILE" or "USER_CHANNEL"
+  fetchedAt       DateTime  @default(now())
+
+  @@index([bucketTime])
+  @@index([tokenId, bucketTime])
+  @@unique([tokenId, bucketTime])
+}
+
+// =====================
+// NextAuth Tables
+// =====================
 
 model Account {
   id                 String  @id @default(cuid())

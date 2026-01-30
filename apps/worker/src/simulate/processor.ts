@@ -10,7 +10,7 @@
  * - If < threshold: buffers in small trade buffer for batching
  */
 
-import { TradeSide, ActivityType, PortfolioScope } from "@prisma/client";
+import { TradeSide, ActivityType, PortfolioScope, TradingMode } from "@prisma/client";
 import { SizingMode } from "@copybot/shared";
 import { prisma } from "../db/prisma.js";
 import { createChildLogger } from "../log/logger.js";
@@ -66,6 +66,7 @@ export const groupEventsWorker = createWorker<GroupJobData>(
 async function getLeaderExposureMicros(followedUserId: string): Promise<bigint> {
     const snapshot = await prisma.portfolioSnapshot.findFirst({
         where: {
+            tradingMode: TradingMode.PAPER,
             portfolioScope: PortfolioScope.SHADOW_USER,
             followedUserId,
         },

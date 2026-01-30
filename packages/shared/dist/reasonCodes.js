@@ -43,4 +43,27 @@ export const ReasonCodes = {
     LEADER_TRADE_BELOW_MIN_NOTIONAL: "LEADER_TRADE_BELOW_MIN_NOTIONAL",
     /** HARD budget enforcement: exposure would exceed budget allocation */
     BUDGET_HARD_CAP_EXCEEDED: "BUDGET_HARD_CAP_EXCEEDED",
+    // Live trading reason codes
+    /** Order book not fresh enough for live execution */
+    LIVE_NO_FRESH_BOOK: "LIVE_NO_FRESH_BOOK",
+    /** Order would not be marketable within price bounds */
+    LIVE_NOT_MARKETABLE_WITHIN_BOUNDS: "LIVE_NOT_MARKETABLE_WITHIN_BOUNDS",
+    /** Order not marketable after tick rounding */
+    LIVE_NOT_MARKETABLE_AFTER_TICK_ROUNDING: "LIVE_NOT_MARKETABLE_AFTER_TICK_ROUNDING",
+    /** Order size below exchange minimum */
+    LIVE_BELOW_MIN_ORDER_SIZE: "LIVE_BELOW_MIN_ORDER_SIZE",
+    /** Invalid tick size or step constraint */
+    LIVE_INVALID_TICK_OR_STEP: "LIVE_INVALID_TICK_OR_STEP",
+    /** Insufficient cash to execute BUY */
+    LIVE_INSUFFICIENT_CASH_TO_BUY: "LIVE_INSUFFICIENT_CASH_TO_BUY",
+    /** Insufficient position to execute SELL */
+    LIVE_INSUFFICIENT_POSITION_TO_SELL: "LIVE_INSUFFICIENT_POSITION_TO_SELL",
+    /** Exchange rejected the order */
+    LIVE_ORDER_REJECTED: "LIVE_ORDER_REJECTED",
+    /** Trading params (tick/min) not available for token */
+    LIVE_TRADING_PARAMS_UNAVAILABLE: "LIVE_TRADING_PARAMS_UNAVAILABLE",
+    /** Live trading disabled globally */
+    LIVE_TRADING_DISABLED: "LIVE_TRADING_DISABLED",
+    /** Live trading disabled for this user */
+    LIVE_USER_DISABLED: "LIVE_USER_DISABLED",
 };
