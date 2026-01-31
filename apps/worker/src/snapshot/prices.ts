@@ -25,6 +25,8 @@ const logger = createChildLogger({ module: "price-snapshot" });
 const PRICE_REFRESH_INTERVAL_MS = 120_000;
 
 let priceRefreshTimer: ReturnType<typeof setInterval> | null = null;
+let priceRefreshInFlight = false;
+let priceRefreshSkippedWhileInFlight = 0;
 
 /**
  * Get all unique assetIds that are held across any portfolio.
@@ -43,6 +45,22 @@ async function getHeldAssetIds(): Promise<string[]> {
  */
 async function refreshPrices(): Promise<void> {
     const log = logger.child({ operation: "refresh" });
+
+    if (priceRefreshInFlight) {
+        priceRefreshSkippedWhileInFlight++;
+        if (priceRefreshSkippedWhileInFlight === 1) {
+            log.warn("Price refresh already in flight, skipping scheduled run(s)");
+        } else {
+            log.debug(
+                { skippedWhileInFlight: priceRefreshSkippedWhileInFlight },
+                "Price refresh still in flight, skipping"
+            );
+        }
+        return;
+    }
+
+    priceRefreshInFlight = true;
+    const startedAtMs = Date.now();
 
     try {
         // 1. Get held assets
@@ -80,6 +98,17 @@ async function refreshPrices(): Promise<void> {
         );
     } catch (err) {
         log.error({ err }, "Price refresh failed");
+    } finally {
+        const elapsedMs = Date.now() - startedAtMs;
+        log.debug(
+            {
+                elapsedMs,
+                skippedWhileInFlight: priceRefreshSkippedWhileInFlight,
+            },
+            "Price refresh run finished"
+        );
+        priceRefreshInFlight = false;
+        priceRefreshSkippedWhileInFlight = 0;
     }
 }
 

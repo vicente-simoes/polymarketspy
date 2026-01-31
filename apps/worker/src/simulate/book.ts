@@ -12,6 +12,7 @@
 
 import { TradeSide } from "@prisma/client";
 import { fetchOrderBook, type OrderBook } from "../poly/index.js";
+import { CLOB_PRIORITY_EXECUTOR } from "../http/limiters.js";
 import { createChildLogger } from "../log/logger.js";
 import {
     normalizeOrderBook,
@@ -427,7 +428,7 @@ export async function simulateBookFills(
 
     try {
         // Fetch order book
-        const book = await fetchOrderBook(assetId);
+        const book = await fetchOrderBook(assetId, { priority: CLOB_PRIORITY_EXECUTOR });
 
         // Check if book exists (null means resolved market or cached failure)
         if (!book) {

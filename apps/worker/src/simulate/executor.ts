@@ -51,6 +51,13 @@ function isNumericMarketId(value: string | null): value is string {
     return typeof value === "string" && /^\d+$/.test(value);
 }
 
+function extractWindowStartMsFromGroupKey(groupKey: string): number | null {
+    const match = groupKey.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
+    if (!match) return null;
+    const parsed = Date.parse(match[0]);
+    return Number.isNaN(parsed) ? null : parsed;
+}
+
 async function getMarketIdForToken(tokenId: string): Promise<string | null> {
     const now = Date.now();
     const cached = marketIdCache.get(tokenId);
@@ -238,6 +245,7 @@ export async function executeTradeGroup(
     // Use rawTokenId (on-chain) if available, otherwise assetId (API)
     const effectiveTokenId = group.rawTokenId ?? group.assetId;
     let resolvedMarketId = isNumericMarketId(group.marketId) ? group.marketId : null;
+    const windowStartMsFromGroupKey = extractWindowStartMsFromGroupKey(group.groupKey);
 
     const log = logger.child({
         groupKey: group.groupKey,
@@ -382,10 +390,12 @@ export async function executeTradeGroup(
     // 5. Fetch order book FIRST (before computing price bounds)
     // Uses cache-first approach: WS cache if available, REST fallback
     log.debug("Fetching order book (cache-first)");
+    const bookFetchStartedAtMs = Date.now();
     const bookResult = await getBook(effectiveTokenId, {
         waitMs: 500,
         freshnessMs: 2000,
     });
+    const bookFetchElapsedMs = Date.now() - bookFetchStartedAtMs;
 
     if (!bookResult.book) {
         log.warn("Order book not available (market may be resolved)");
@@ -455,6 +465,7 @@ export async function executeTradeGroup(
             simulationSuccess: simulation.success,
             bookSource: bookResult.source,
             bookStale: bookResult.stale,
+            bookFetchElapsedMs,
 
             // Source type
             sourceType,
@@ -556,6 +567,8 @@ export async function executeTradeGroup(
     // 10. Determine decision
     const uniqueReasons = [...new Set(reasonCodes)];
     const decision = uniqueReasons.length === 0 ? CopyDecision.EXECUTE : CopyDecision.SKIP;
+    const lagSinceWindowStartMs =
+        windowStartMsFromGroupKey !== null ? Date.now() - windowStartMsFromGroupKey : null;
 
     log.info(
         {
@@ -564,6 +577,8 @@ export async function executeTradeGroup(
             targetNotional: targetResult.targetNotionalMicros.toString(),
             filledNotional: simulation.filledNotionalMicros.toString(),
             filledRatio: simulation.filledRatioBps,
+            windowStartMs: windowStartMsFromGroupKey,
+            lagSinceWindowStartMs,
         },
         "Copy attempt decision"
     );
