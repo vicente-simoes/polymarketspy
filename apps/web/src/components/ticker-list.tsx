@@ -5,7 +5,7 @@ import useSWR from 'swr'
 import { fetcher } from '@/lib/fetcher'
 
 export function GlobalPositions() {
-  const { data, error, isLoading } = useSWR('/api/portfolio/global', fetcher, { refreshInterval: 10000 })
+  const { data, error, isLoading } = useSWR('/api/portfolio/global', fetcher, { refreshInterval: 30000 })
   const positions = data?.positions || []
 
   if (isLoading) return <div className="bg-[#0D0D0D] rounded-2xl p-4 md:p-6 text-gray-400">Loading positions...</div>

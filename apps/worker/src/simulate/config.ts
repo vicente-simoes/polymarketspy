@@ -22,6 +22,28 @@ import {
 
 const logger = createChildLogger({ module: "simulation-config" });
 
+const BUDGETED_DYNAMIC_DISABLED = true;
+
+function enforceFixedRateSizing(sizing: Sizing): Sizing {
+    if (!BUDGETED_DYNAMIC_DISABLED) return sizing;
+
+    if (sizing.budgetedDynamicEnabled || sizing.sizingMode === SizingMode.BUDGETED_DYNAMIC) {
+        logger.warn(
+            {
+                sizingMode: sizing.sizingMode,
+                budgetedDynamicEnabled: sizing.budgetedDynamicEnabled,
+            },
+            "Budgeted dynamic sizing is disabled; forcing fixed-rate"
+        );
+    }
+
+    return {
+        ...sizing,
+        sizingMode: SizingMode.FIXED_RATE,
+        budgetedDynamicEnabled: false,
+    };
+}
+
 /**
  * Default guardrails (locked in planning.md).
  */
@@ -155,6 +177,7 @@ async function loadGlobalConfig(): Promise<{
             logger.warn({ err }, "Failed to parse global sizing, using defaults");
         }
     }
+    sizing = enforceFixedRateSizing(sizing);
 
     // Load small trade buffering config from SystemCheckpoint
     const bufferingRow = await prisma.systemCheckpoint.findUnique({
@@ -223,6 +246,7 @@ async function loadUserConfig(
             logger.warn({ err, followedUserId }, "Failed to parse user sizing, using global");
         }
     }
+    sizing = enforceFixedRateSizing(sizing);
 
     // For now, small trade buffering is global-only (no per-user overrides)
     // Future: could load from a per-user SystemCheckpoint or new table

@@ -25,6 +25,14 @@ const envSchema = z.object({
     NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
     LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error", "fatal"]).default("info"),
     WORKER_PORT: z.coerce.number().default(8081),
+
+    // BullMQ concurrency guardrails (defaults chosen for low-CPU single-droplet deployments)
+    WORKER_CONCURRENCY_DEFAULT: z.coerce.number().int().positive().default(2),
+    WORKER_CONCURRENCY_INGEST: z.coerce.number().int().positive().optional(),
+    WORKER_CONCURRENCY_GROUP: z.coerce.number().int().positive().optional(),
+    WORKER_CONCURRENCY_COPY_GLOBAL: z.coerce.number().int().positive().optional(),
+    WORKER_CONCURRENCY_RECONCILE: z.coerce.number().int().positive().optional(),
+    WORKER_CONCURRENCY_PRICES: z.coerce.number().int().positive().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

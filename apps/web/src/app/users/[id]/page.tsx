@@ -14,7 +14,6 @@ import {
     ArrowLeft,
     BarChart3,
     ExternalLink,
-    TrendingDown,
     TrendingUp
 } from "lucide-react"
 import {
@@ -187,7 +186,7 @@ export default function UserDetailPage({ params }: { params: Promise<{ id: strin
     const { data, error, isLoading, mutate } = useSWR<UserDetailResponse>(
         `/api/users/${userId}`,
         fetcher,
-        { refreshInterval: 10000 }
+        { refreshInterval: 30000 }
     )
     const { toast } = useToast()
 
@@ -325,14 +324,6 @@ export default function UserDetailPage({ params }: { params: Promise<{ id: strin
                                                 </div>
                                             </div>
                                             <div className="text-[#6f6f6f]">
-                                                Last Snapshot
-                                                <div className="text-white text-sm">
-                                                    {metrics?.lastSnapshotTs
-                                                        ? formatDateTime(metrics.lastSnapshotTs)
-                                                        : "No snapshots"}
-                                                </div>
-                                            </div>
-                                            <div className="text-[#6f6f6f]">
                                                 Exposure
                                                 <div className="text-white text-lg font-semibold">
                                                     {formatCurrency(metrics?.execExposure ?? 0)}
@@ -341,17 +332,13 @@ export default function UserDetailPage({ params }: { params: Promise<{ id: strin
                                         </div>
                                     </div>
 
-                                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
                                         <MetricTile
-                                            label="Shadow Equity"
-                                            value={formatCurrency(metrics?.shadowEquity ?? 0)}
-                                        />
-                                        <MetricTile
-                                            label="Exec Equity"
+                                            label="Attributed Equity"
                                             value={formatCurrency(metrics?.execEquity ?? 0)}
                                         />
                                         <MetricTile
-                                            label="Exec PnL"
+                                            label="PnL (Attributed)"
                                             value={`${pnlPositive ? "+" : ""}${formatCurrency(pnl)}`}
                                             valueClassName={pnlPositive ? "text-[#86efac]" : "text-red-400"}
                                             hint={`${formatCurrency(metrics?.execRealizedPnl ?? 0)} realized`}
@@ -368,7 +355,7 @@ export default function UserDetailPage({ params }: { params: Promise<{ id: strin
                                     <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
                                         <div className="flex items-center gap-2 text-sm text-[#6f6f6f]">
                                             <TrendingUp className="h-4 w-4 text-[#86efac]" />
-                                            Shadow vs Executable Equity
+                                            Attributed Equity History
                                         </div>
                                         <div className="mt-4 h-[260px] sm:h-[320px]">
                                             {equityCurve.length > 0 ? (
@@ -398,15 +385,9 @@ export default function UserDetailPage({ params }: { params: Promise<{ id: strin
                                                                             </div>
                                                                             <div className="mt-2 flex flex-col gap-1">
                                                                                 <span>
-                                                                                    Shadow:{" "}
+                                                                                    Equity:{" "}
                                                                                     {formatCurrency(
                                                                                         Number(payload[0].value)
-                                                                                    )}
-                                                                                </span>
-                                                                                <span>
-                                                                                    Exec:{" "}
-                                                                                    {formatCurrency(
-                                                                                        Number(payload[1].value)
                                                                                     )}
                                                                                 </span>
                                                                             </div>
@@ -415,13 +396,6 @@ export default function UserDetailPage({ params }: { params: Promise<{ id: strin
                                                                 }
                                                                 return null
                                                             }}
-                                                        />
-                                                        <Line
-                                                            type="monotone"
-                                                            dataKey="shadow"
-                                                            stroke="#9ca3af"
-                                                            strokeWidth={2}
-                                                            dot={false}
                                                         />
                                                         <Line
                                                             type="monotone"
@@ -441,69 +415,6 @@ export default function UserDetailPage({ params }: { params: Promise<{ id: strin
                                     </div>
 
                                     <div className="flex flex-col gap-6">
-                                        <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
-                                            <div className="flex items-center gap-2 text-sm text-[#6f6f6f]">
-                                                <TrendingDown className="h-4 w-4 text-blue-400" />
-                                                Tracking Gap (Shadow - Exec)
-                                            </div>
-                                            <div className="mt-4 h-[180px]">
-                                                {equityCurve.length > 0 ? (
-                                                    <ResponsiveContainer width="100%" height="100%">
-                                                        <AreaChart data={equityCurve}>
-                                                            <defs>
-                                                                <linearGradient id="gapFill" x1="0" y1="0" x2="0" y2="1">
-                                                                    <stop offset="0%" stopColor="#38bdf8" stopOpacity={0.4} />
-                                                                    <stop offset="100%" stopColor="#38bdf8" stopOpacity={0} />
-                                                                </linearGradient>
-                                                            </defs>
-                                                            <CartesianGrid strokeDasharray="3 3" stroke="#1F1F1F" />
-                                                            <XAxis
-                                                                dataKey="ts"
-                                                                hide
-                                                            />
-                                                            <YAxis
-                                                                tick={{ fill: "#6f6f6f" }}
-                                                                axisLine={false}
-                                                                tickLine={false}
-                                                                tickFormatter={(value) => `$${value}`}
-                                                            />
-                                                            <Tooltip
-                                                                content={({ active, payload, label }) => {
-                                                                    if (active && payload && payload.length) {
-                                                                        return (
-                                                                            <div className="rounded-lg border border-[#27272A] bg-[#0D0D0D] p-3 text-sm text-white shadow-xl">
-                                                                                <div className="text-[#6f6f6f]">
-                                                                                    {formatDateTime(label as number)}
-                                                                                </div>
-                                                                                <div className="mt-2">
-                                                                                    Gap:{" "}
-                                                                                    {formatCurrency(
-                                                                                        Number(payload[0].value)
-                                                                                    )}
-                                                                                </div>
-                                                                            </div>
-                                                                        )
-                                                                    }
-                                                                    return null
-                                                                }}
-                                                            />
-                                                            <Area
-                                                                type="monotone"
-                                                                dataKey="gap"
-                                                                stroke="#38bdf8"
-                                                                strokeWidth={2}
-                                                                fill="url(#gapFill)"
-                                                            />
-                                                        </AreaChart>
-                                                    </ResponsiveContainer>
-                                                ) : (
-                                                    <div className="h-full flex items-center justify-center text-[#6f6f6f]">
-                                                        No tracking data yet
-                                                    </div>
-                                                )}
-                                            </div>
-                                        </div>
-
                                         <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
                                             <div className="flex items-center gap-2 text-sm text-[#6f6f6f]">
                                                 <Activity className="h-4 w-4 text-[#86efac]" />
@@ -713,48 +624,9 @@ export default function UserDetailPage({ params }: { params: Promise<{ id: strin
                                     </div>
                                 </div>
 
-                                <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                                <div className="grid grid-cols-1 gap-6">
                                     <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
-                                        <div className="text-sm text-[#6f6f6f]">Shadow Positions</div>
-                                        <div className="mt-4 overflow-x-auto">
-                                            <table className="w-full text-sm">
-                                                <thead>
-                                                    <tr className="text-[#6f6f6f] border-b border-[#27272A]">
-                                                        <th className="pb-3 text-left">Market</th>
-                                                        <th className="pb-3 text-right">Shares</th>
-                                                        <th className="pb-3 text-right">Invested</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    {user.positions.shadow.length > 0 ? (
-                                                        user.positions.shadow.map((pos) => (
-                                                            <tr key={pos.assetId} className="border-b border-[#1A1A1A] last:border-0">
-                                                                <td className="py-3 text-white">
-                                                                    <div className="font-medium">{pos.marketTitle}</div>
-                                                                    <div className="text-xs text-[#6f6f6f]">{pos.outcome}</div>
-                                                                </td>
-                                                                <td className="py-3 text-right text-white">
-                                                                    {pos.shares.toFixed(2)}
-                                                                </td>
-                                                                <td className="py-3 text-right text-white">
-                                                                    {formatCurrency(pos.invested)}
-                                                                </td>
-                                                            </tr>
-                                                        ))
-                                                    ) : (
-                                                        <tr>
-                                                            <td colSpan={3} className="py-6 text-center text-[#6f6f6f]">
-                                                                No open positions
-                                                            </td>
-                                                        </tr>
-                                                    )}
-                                                </tbody>
-                                            </table>
-                                        </div>
-                                    </div>
-
-                                    <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
-                                        <div className="text-sm text-[#6f6f6f]">Executable Positions</div>
+                                        <div className="text-sm text-[#6f6f6f]">Attributed Positions</div>
                                         <div className="mt-4 overflow-x-auto">
                                             <table className="w-full text-sm">
                                                 <thead>

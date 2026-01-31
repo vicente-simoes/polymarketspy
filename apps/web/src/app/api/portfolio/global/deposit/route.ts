@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import prisma from "@/lib/prisma"
+import { clearServerCache } from "@/lib/server-cache"
 import { randomUUID } from "crypto"
 import { LedgerEntryType } from "@prisma/client"
 
@@ -37,19 +38,39 @@ export async function POST(request: Request) {
 
         const refId = `deposit:${randomUUID()}`
 
-        await prisma.ledgerEntry.create({
-            data: {
-                portfolioScope: "EXEC_GLOBAL",
-                followedUserId: null,
-                marketId: null,
-                assetId: null,
-                entryType: LedgerEntryType.DEPOSIT,
-                shareDeltaMicros: BigInt(0),
-                cashDeltaMicros: BigInt(amountMicros),
-                priceMicros: null,
-                refId
-            }
+        const cashDeltaMicros = BigInt(amountMicros)
+
+        await prisma.$transaction(async (tx) => {
+            await tx.ledgerEntry.create({
+                data: {
+                    portfolioScope: "EXEC_GLOBAL",
+                    followedUserId: null,
+                    marketId: null,
+                    assetId: null,
+                    entryType: LedgerEntryType.DEPOSIT,
+                    shareDeltaMicros: BigInt(0),
+                    cashDeltaMicros,
+                    priceMicros: null,
+                    refId
+                }
+            })
+
+            await tx.globalPortfolioState.upsert({
+                where: { id: "EXEC_GLOBAL" },
+                create: {
+                    id: "EXEC_GLOBAL",
+                    cashMicros: cashDeltaMicros,
+                    contributedCapitalMicros: cashDeltaMicros
+                },
+                update: {
+                    cashMicros: { increment: cashDeltaMicros },
+                    contributedCapitalMicros: { increment: cashDeltaMicros }
+                }
+            })
         })
+
+        clearServerCache("overview:")
+        clearServerCache("portfolio:")
 
         return NextResponse.json({ ok: true })
     } catch (error) {

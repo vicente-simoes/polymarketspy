@@ -1,5 +1,6 @@
 import { LedgerEntryType, PortfolioScope } from "@prisma/client";
 import { prisma } from "./db/prisma.js";
+import { createLedgerEntryIfNotExistsAndUpdateCaches } from "./db/ledger.js";
 import { createChildLogger } from "./log/logger.js";
 import { fetchResolvedTokenPayouts } from "./enrichment/gamma.js";
 
@@ -93,16 +94,13 @@ async function settleResolvedPositionsOnce(): Promise<void> {
             const sharesRefId = `${refBase}:shares`;
             const cashRefId = `${refBase}:cash`;
 
-            // 1) Burn shares to close the position.
-            await prisma.ledgerEntry.upsert({
-                where: {
-                    portfolioScope_refId_entryType: {
-                        portfolioScope: PortfolioScope.EXEC_GLOBAL,
-                        refId: sharesRefId,
-                        entryType: LedgerEntryType.SETTLEMENT,
-                    },
-                },
-                create: {
+            // 2) Credit cash payout (if any). Winning token pays 1 USDC/share; losing pays 0.
+            const cashDeltaMicros =
+                (position.shareMicros * BigInt(payoutPerShareMicros)) / MICROS_PER_UNIT;
+
+            await prisma.$transaction(async (tx) => {
+                // 1) Burn shares to close the position.
+                await createLedgerEntryIfNotExistsAndUpdateCaches(tx, {
                     portfolioScope: PortfolioScope.EXEC_GLOBAL,
                     followedUserId: position.followedUserId,
                     marketId: position.marketId,
@@ -112,23 +110,10 @@ async function settleResolvedPositionsOnce(): Promise<void> {
                     cashDeltaMicros: BigInt(0),
                     priceMicros: null,
                     refId: sharesRefId,
-                },
-                update: {},
-            });
+                });
 
-            // 2) Credit cash payout (if any). Winning token pays 1 USDC/share; losing pays 0.
-            const cashDeltaMicros =
-                (position.shareMicros * BigInt(payoutPerShareMicros)) / MICROS_PER_UNIT;
-            if (cashDeltaMicros !== BigInt(0)) {
-                await prisma.ledgerEntry.upsert({
-                    where: {
-                        portfolioScope_refId_entryType: {
-                            portfolioScope: PortfolioScope.EXEC_GLOBAL,
-                            refId: cashRefId,
-                            entryType: LedgerEntryType.SETTLEMENT,
-                        },
-                    },
-                    create: {
+                if (cashDeltaMicros !== BigInt(0)) {
+                    await createLedgerEntryIfNotExistsAndUpdateCaches(tx, {
                         portfolioScope: PortfolioScope.EXEC_GLOBAL,
                         followedUserId: position.followedUserId,
                         marketId: position.marketId,
@@ -138,10 +123,9 @@ async function settleResolvedPositionsOnce(): Promise<void> {
                         cashDeltaMicros,
                         priceMicros: null,
                         refId: cashRefId,
-                    },
-                    update: {},
-                });
-            }
+                    });
+                }
+            });
 
             settledPositions++;
 
@@ -200,4 +184,3 @@ export function stopSettlementLoop(): void {
         logger.info("Settlement loop stopped");
     }
 }
-

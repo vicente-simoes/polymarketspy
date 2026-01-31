@@ -9,7 +9,7 @@ import { useState } from 'react'
 
 export function PerformanceChart() {
   const [timeRange, setTimeRange] = useState('1M')
-  const { data: apiData, error, isLoading } = useSWR(`/api/overview?range=${timeRange}`, fetcher, { refreshInterval: 10000 })
+  const { data: apiData, error, isLoading } = useSWR(`/api/overview?range=${timeRange}`, fetcher, { refreshInterval: 30000 })
 
   const equityCurve = apiData?.equityCurve || []
   const hasData = equityCurve.length > 0

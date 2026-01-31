@@ -11,8 +11,9 @@
  */
 
 import { TradeSide, PortfolioScope, CopyDecision } from "@prisma/client";
-import { ReasonCodes, SizingMode, BudgetEnforcement, type ReasonCode } from "@copybot/shared";
+import { ReasonCodes, type ReasonCode } from "@copybot/shared";
 import { prisma } from "../db/prisma.js";
+import { createLedgerEntryIfNotExistsAndUpdateCaches } from "../db/ledger.js";
 import { createChildLogger } from "../log/logger.js";
 import { getSystemConfig } from "../config/system.js";
 import { getGlobalConfig, getUserConfig } from "./config.js";
@@ -137,10 +138,8 @@ async function getPortfolioState(
         ),
     ];
     const priceSnapshots = assetIds.length
-        ? await prisma.marketPriceSnapshot.findMany({
+        ? await prisma.currentPrice.findMany({
               where: { assetId: { in: assetIds } },
-              orderBy: { bucketTime: "desc" },
-              distinct: ["assetId"],
               select: { assetId: true, midpointPriceMicros: true },
           })
         : [];
@@ -220,31 +219,6 @@ async function getPortfolioState(
 }
 
 /**
- * Get leader's exposure from latest SHADOW_USER snapshot.
- * Used for budgeted dynamic sizing to compute r_u = budget / leaderExposure.
- */
-async function getLeaderExposureMicros(followedUserId: string): Promise<bigint> {
-    const snapshot = await prisma.portfolioSnapshot.findFirst({
-        where: {
-            portfolioScope: PortfolioScope.SHADOW_USER,
-            followedUserId,
-        },
-        orderBy: { bucketTime: "desc" },
-        select: { exposureMicros: true },
-    });
-
-    if (!snapshot) {
-        logger.warn(
-            { followedUserId },
-            "No SHADOW_USER snapshot found for leader exposure, using 0"
-        );
-        return BigInt(0);
-    }
-
-    return snapshot.exposureMicros;
-}
-
-/**
  * Options for copy attempt execution.
  */
 export interface CopyAttemptOptions {
@@ -283,11 +257,6 @@ export async function executeTradeGroup(
 
     const sourceType = options.sourceType ?? "AGGREGATOR";
     const isBufferSource = sourceType === "BUFFER";
-
-    // Check if budgeted dynamic is active for this user
-    const useBudgetedDynamic =
-        sizing.budgetedDynamicEnabled &&
-        sizing.sizingMode === SizingMode.BUDGETED_DYNAMIC;
 
     // ─── MIN LEADER TRADE NOTIONAL FILTER ──────────────────────────────────
     // Skip small leader trades (applies only to non-buffer trades)
@@ -370,40 +339,11 @@ export async function executeTradeGroup(
     // For non-buffer: compute raw target based on sizing mode (fixed or dynamic)
 
     let rawTargetMicros: bigint;
-    let effectiveRateBps: number | undefined;
-    let clampedToRMin = false;
-    let clampedToRMax = false;
-    let leaderExposureMicros: bigint | undefined;
 
     if (isBufferSource) {
         // Buffer trades: notional is already scaled, use directly
         rawTargetMicros = group.totalNotionalMicros;
         log.debug({ rawTargetMicros: rawTargetMicros.toString() }, "Using buffer notional as raw target");
-    } else if (useBudgetedDynamic && followedUserId) {
-        // Budgeted dynamic mode: compute rate from budget / leader exposure
-        leaderExposureMicros = await getLeaderExposureMicros(followedUserId);
-        const rawResult = computeRawTargetNotional(
-            group.totalNotionalMicros,
-            sizing,
-            leaderExposureMicros
-        );
-        rawTargetMicros = rawResult.rawTargetMicros;
-        effectiveRateBps = rawResult.effectiveRateBps;
-        clampedToRMin = rawResult.clampedToRMin ?? false;
-        clampedToRMax = rawResult.clampedToRMax ?? false;
-
-        log.debug(
-            {
-                theirNotional: group.totalNotionalMicros.toString(),
-                budgetUsdcMicros: sizing.budgetUsdcMicros,
-                leaderExposureMicros: leaderExposureMicros.toString(),
-                effectiveRateBps,
-                rawTargetMicros: rawTargetMicros.toString(),
-                clampedToRMin,
-                clampedToRMax,
-            },
-            "Computed budgeted dynamic raw target"
-        );
     } else {
         // Fixed-rate mode: use standard formula
         const rawResult = computeRawTargetNotional(group.totalNotionalMicros, sizing);
@@ -424,166 +364,6 @@ export async function executeTradeGroup(
         portfolioState.equityMicros,
         sizing
     );
-
-    // ─── HARD BUDGET ENFORCEMENT ───────────────────────────────────────────
-    // If budgeted dynamic + HARD enforcement + increasing exposure:
-    // Cap target to budget headroom, or skip if headroom exhausted
-    let budgetHeadroomMicros: bigint | undefined;
-    let budgetCapped = false;
-
-    if (
-        useBudgetedDynamic &&
-        followedUserId &&
-        sizing.budgetEnforcement === BudgetEnforcement.HARD
-    ) {
-        // Check if this trade is reducing exposure (allows bypass)
-        const isReducing = effectiveTokenId
-            ? await isReducingExposure(
-                  portfolioScope,
-                  followedUserId,
-                  effectiveTokenId,
-                  group.side
-              )
-            : false;
-
-        if (!isReducing) {
-            // Get current exposure attributed to this leader
-            const currentExposureMicros =
-                portfolioState.exposureByUser.get(followedUserId) ?? BigInt(0);
-            const budgetMicros = BigInt(sizing.budgetUsdcMicros);
-            budgetHeadroomMicros = budgetMicros - currentExposureMicros;
-
-            log.debug(
-                {
-                    budgetMicros: budgetMicros.toString(),
-                    currentExposureMicros: currentExposureMicros.toString(),
-                    budgetHeadroomMicros: budgetHeadroomMicros.toString(),
-                    targetNotionalMicros: targetResult.targetNotionalMicros.toString(),
-                },
-                "Checking HARD budget enforcement"
-            );
-
-            if (budgetHeadroomMicros <= BigInt(0)) {
-                // No headroom: skip trade
-                log.info(
-                    {
-                        budgetMicros: budgetMicros.toString(),
-                        currentExposureMicros: currentExposureMicros.toString(),
-                    },
-                    "Budget exhausted, skipping trade"
-                );
-
-                // Write CopyAttempt row
-                const copyAttemptData = {
-                    portfolioScope,
-                    followedUserId,
-                    groupKey: group.groupKey,
-                    decision: CopyDecision.SKIP,
-                    reasonCodes: [ReasonCodes.BUDGET_HARD_CAP_EXCEEDED],
-                    sourceType,
-                    bufferedTradeCount: options.bufferedTradeCount ?? group.tradeEventIds.length,
-                    targetNotionalMicros: targetResult.targetNotionalMicros,
-                    filledNotionalMicros: BigInt(0),
-                    vwapPriceMicros: null,
-                    filledRatioBps: 0,
-                    theirReferencePriceMicros: group.vwapPriceMicros,
-                    midPriceMicrosAtDecision: 0,
-                };
-
-                await prisma.copyAttempt.upsert({
-                    where: {
-                        portfolioScope_followedUserId_groupKey: {
-                            portfolioScope,
-                            followedUserId,
-                            groupKey: group.groupKey,
-                        },
-                    },
-                    create: copyAttemptData,
-                    update: { decision: CopyDecision.SKIP, reasonCodes: [ReasonCodes.BUDGET_HARD_CAP_EXCEEDED] },
-                });
-
-                return {
-                    decision: CopyDecision.SKIP,
-                    reasonCodes: [ReasonCodes.BUDGET_HARD_CAP_EXCEEDED],
-                    targetNotionalMicros: targetResult.targetNotionalMicros,
-                    filledNotionalMicros: BigInt(0),
-                    filledShareMicros: BigInt(0),
-                    vwapPriceMicros: 0,
-                    filledRatioBps: 0,
-                };
-            }
-
-            // Cap to headroom if target exceeds it
-            if (targetResult.targetNotionalMicros > budgetHeadroomMicros) {
-                const cappedTarget = budgetHeadroomMicros;
-
-                // Check if capped target is below minimum
-                if (cappedTarget < BigInt(sizing.minTradeNotionalMicros)) {
-                    log.info(
-                        {
-                            cappedTarget: cappedTarget.toString(),
-                            minTradeNotional: sizing.minTradeNotionalMicros,
-                        },
-                        "Budget-capped target below min trade notional, skipping"
-                    );
-
-                    const copyAttemptData = {
-                        portfolioScope,
-                        followedUserId,
-                        groupKey: group.groupKey,
-                        decision: CopyDecision.SKIP,
-                        reasonCodes: [ReasonCodes.BUDGET_HARD_CAP_EXCEEDED],
-                        sourceType,
-                        bufferedTradeCount: options.bufferedTradeCount ?? group.tradeEventIds.length,
-                        targetNotionalMicros: targetResult.targetNotionalMicros,
-                        filledNotionalMicros: BigInt(0),
-                        vwapPriceMicros: null,
-                        filledRatioBps: 0,
-                        theirReferencePriceMicros: group.vwapPriceMicros,
-                        midPriceMicrosAtDecision: 0,
-                    };
-
-                    await prisma.copyAttempt.upsert({
-                        where: {
-                            portfolioScope_followedUserId_groupKey: {
-                                portfolioScope,
-                                followedUserId,
-                                groupKey: group.groupKey,
-                            },
-                        },
-                        create: copyAttemptData,
-                        update: { decision: CopyDecision.SKIP, reasonCodes: [ReasonCodes.BUDGET_HARD_CAP_EXCEEDED] },
-                    });
-
-                    return {
-                        decision: CopyDecision.SKIP,
-                        reasonCodes: [ReasonCodes.BUDGET_HARD_CAP_EXCEEDED],
-                        targetNotionalMicros: targetResult.targetNotionalMicros,
-                        filledNotionalMicros: BigInt(0),
-                        filledShareMicros: BigInt(0),
-                        vwapPriceMicros: 0,
-                        filledRatioBps: 0,
-                    };
-                }
-
-                // Apply budget cap
-                log.info(
-                    {
-                        originalTarget: targetResult.targetNotionalMicros.toString(),
-                        cappedTarget: cappedTarget.toString(),
-                        budgetHeadroom: budgetHeadroomMicros.toString(),
-                    },
-                    "Capping target to budget headroom"
-                );
-
-                targetResult = {
-                    ...targetResult,
-                    targetNotionalMicros: cappedTarget,
-                };
-                budgetCapped = true;
-            }
-        }
-    }
 
     // 4. Check if we have a token ID
     if (!effectiveTokenId) {
@@ -666,20 +446,6 @@ export async function executeTradeGroup(
             clampedToMin: targetResult.clampedToMin,
             clampedToMax: targetResult.clampedToMax,
             clampedByBankroll: targetResult.clampedByBankroll,
-
-            // Budgeted dynamic (when applicable)
-            sizingMode: sizing.sizingMode,
-            budgetedDynamicEnabled: sizing.budgetedDynamicEnabled,
-            budgetEnforcement: sizing.budgetEnforcement,
-            ...(useBudgetedDynamic && {
-                budgetUsdcMicros: sizing.budgetUsdcMicros,
-                leaderExposureMicros: leaderExposureMicros?.toString(),
-                effectiveRateBps,
-                clampedToRMin,
-                clampedToRMax,
-                budgetHeadroomMicros: budgetHeadroomMicros?.toString(),
-                budgetCapped,
-            }),
 
             // Simulation results
             availableNotionalMicros: simulation.availableNotionalMicros.toString(),
@@ -894,28 +660,22 @@ export async function executeTradeGroup(
             ? -simulation.filledNotionalMicros
             : simulation.filledNotionalMicros;
 
-        await prisma.ledgerEntry.upsert({
-            where: {
-                portfolioScope_refId_entryType: {
-                    portfolioScope,
-                    refId: `copy:${copyAttempt.id}`,
-                    entryType: "TRADE_FILL",
-                },
-            },
-            create: {
+        const marketId = effectiveTokenId
+            ? resolvedMarketId ?? (await getMarketIdForToken(effectiveTokenId))
+            : resolvedMarketId;
+
+        await prisma.$transaction(async (tx) => {
+            await createLedgerEntryIfNotExistsAndUpdateCaches(tx, {
                 portfolioScope,
                 followedUserId,
-                marketId: effectiveTokenId
-                    ? resolvedMarketId ?? (await getMarketIdForToken(effectiveTokenId))
-                    : resolvedMarketId,
+                marketId,
                 assetId: effectiveTokenId, // Use rawTokenId for WS-first trades
                 entryType: "TRADE_FILL",
                 shareDeltaMicros,
                 cashDeltaMicros,
                 priceMicros: simulation.vwapPriceMicros,
                 refId: `copy:${copyAttempt.id}`,
-            },
-            update: {},
+            });
         });
 
         log.debug("Wrote ExecutableFill and LedgerEntry rows");

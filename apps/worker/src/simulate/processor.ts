@@ -10,8 +10,7 @@
  * - If < threshold: buffers in small trade buffer for batching
  */
 
-import { TradeSide, ActivityType, PortfolioScope } from "@prisma/client";
-import { SizingMode } from "@copybot/shared";
+import { TradeSide, ActivityType } from "@prisma/client";
 import { prisma } from "../db/prisma.js";
 import { createChildLogger } from "../log/logger.js";
 import { createWorker, QUEUE_NAMES, queues } from "../queue/queues.js";
@@ -58,31 +57,6 @@ export const groupEventsWorker = createWorker<GroupJobData>(
         }
     }
 );
-
-/**
- * Get leader's exposure from latest SHADOW_USER snapshot.
- * Used for budgeted dynamic sizing to compute r_u = budget / leaderExposure.
- */
-async function getLeaderExposureMicros(followedUserId: string): Promise<bigint> {
-    const snapshot = await prisma.portfolioSnapshot.findFirst({
-        where: {
-            portfolioScope: PortfolioScope.SHADOW_USER,
-            followedUserId,
-        },
-        orderBy: { bucketTime: "desc" },
-        select: { exposureMicros: true },
-    });
-
-    if (!snapshot) {
-        logger.warn(
-            { followedUserId },
-            "No SHADOW_USER snapshot found for leader exposure in processor, using 0"
-        );
-        return BigInt(0);
-    }
-
-    return snapshot.exposureMicros;
-}
 
 /**
  * Create a single-trade group for immediate execution.
@@ -183,53 +157,20 @@ async function processTradeForAggregation(
         return;
     }
 
-    // Check if budgeted dynamic is active for this user
-    const useBudgetedDynamic =
-        sizing.budgetedDynamicEnabled &&
-        sizing.sizingMode === SizingMode.BUDGETED_DYNAMIC;
+    // Buffering is enabled - compute copy notional (fixed-rate).
+    // Note: budgeted dynamic sizing depended on leader shadow exposure and is disabled.
+    const rawResult = computeRawTargetNotional(trade.notionalMicros, sizing);
+    const rawCopyNotional = rawResult.rawTargetMicros;
 
-    // Buffering is enabled - compute copy notional using mode-aware logic
-    let rawCopyNotional: bigint;
-    let leaderExposureMicros: bigint | undefined;
-    let effectiveRateBps: number | undefined;
-
-    if (useBudgetedDynamic) {
-        // Budgeted dynamic: compute raw target using budget / leader exposure
-        leaderExposureMicros = await getLeaderExposureMicros(followedUserId);
-        const rawResult = computeRawTargetNotional(
-            trade.notionalMicros,
-            sizing,
-            leaderExposureMicros
-        );
-        rawCopyNotional = rawResult.rawTargetMicros;
-        effectiveRateBps = rawResult.effectiveRateBps;
-
-        log.debug(
-            {
-                theirNotional: trade.notionalMicros.toString(),
-                budgetUsdcMicros: sizing.budgetUsdcMicros,
-                leaderExposureMicros: leaderExposureMicros.toString(),
-                effectiveRateBps,
-                rawCopyNotional: rawCopyNotional.toString(),
-                threshold: smallTradeBuffering.notionalThresholdMicros,
-            },
-            "Computed budgeted dynamic raw copy notional for buffering"
-        );
-    } else {
-        // Fixed-rate: use standard formula
-        const rawResult = computeRawTargetNotional(trade.notionalMicros, sizing);
-        rawCopyNotional = rawResult.rawTargetMicros;
-
-        log.debug(
-            {
-                theirNotional: trade.notionalMicros.toString(),
-                copyPctBps: sizing.copyPctNotionalBps,
-                rawCopyNotional: rawCopyNotional.toString(),
-                threshold: smallTradeBuffering.notionalThresholdMicros,
-            },
-            "Computed fixed-rate raw copy notional for buffering"
-        );
-    }
+    log.debug(
+        {
+            theirNotional: trade.notionalMicros.toString(),
+            copyPctBps: sizing.copyPctNotionalBps,
+            rawCopyNotional: rawCopyNotional.toString(),
+            threshold: smallTradeBuffering.notionalThresholdMicros,
+        },
+        "Computed raw copy notional for buffering"
+    );
 
     // If copy notional >= threshold, check if there's an existing bucket to merge with
     if (rawCopyNotional >= BigInt(smallTradeBuffering.notionalThresholdMicros)) {

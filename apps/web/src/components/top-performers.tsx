@@ -5,7 +5,7 @@ import useSWR from 'swr'
 import { fetcher } from '@/lib/fetcher'
 
 export function TopPerformers() {
-    const { data, error, isLoading } = useSWR('/api/overview', fetcher, { refreshInterval: 10000 })
+    const { data, error, isLoading } = useSWR('/api/overview', fetcher, { refreshInterval: 30000 })
     const topMarkets = data?.analytics?.topMarkets || []
 
     if (isLoading) return <div className="h-64 bg-[#0D0D0D] rounded-2xl flex items-center justify-center text-gray-400">Loading top performers...</div>

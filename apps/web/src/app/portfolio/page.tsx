@@ -146,7 +146,7 @@ export default function PortfolioPage() {
     const { data, error, isLoading } = useSWR<GlobalPortfolioResponse>(
         "/api/portfolio/global",
         fetcher,
-        { refreshInterval: 10000 }
+        { refreshInterval: 30000 }
     )
     const {
         data: pnlCurveData,
@@ -155,7 +155,7 @@ export default function PortfolioPage() {
     } = useSWR<GlobalPnlCurveResponse>(
         `/api/portfolio/global/pnl?range=${pnlRange}`,
         fetcher,
-        { refreshInterval: 10000 }
+        { refreshInterval: 30000 }
     )
 
     const metrics = data?.metrics

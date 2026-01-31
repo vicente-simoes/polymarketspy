@@ -97,7 +97,7 @@ export function startReconcileWorker(): void {
         },
         {
             connection: redisConfig,
-            concurrency: 3, // Lower concurrency to reduce parallel API calls
+            concurrency: env.WORKER_CONCURRENCY_RECONCILE ?? 1,
         }
     );
 

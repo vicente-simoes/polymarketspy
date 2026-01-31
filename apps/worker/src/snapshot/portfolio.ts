@@ -3,7 +3,6 @@
  *
  * Every minute, compute snapshots for:
  * - Global executable (EXEC_GLOBAL)
- * - Each per-user shadow (SHADOW_USER)
  *
  * Uses incremental computation:
  * - Start from last snapshot
@@ -280,22 +279,7 @@ async function computeAllSnapshots(): Promise<void> {
         // 1. Global executable
         await computePortfolioSnapshot(PortfolioScope.EXEC_GLOBAL, null, bucketTime);
 
-        // 2. Get all followed users
-        const followedUsers = await prisma.followedUser.findMany({
-            where: { enabled: true },
-            select: { id: true },
-        });
-
-        // 3. Per-user shadow
-        for (const user of followedUsers) {
-            await computePortfolioSnapshot(PortfolioScope.EXEC_GLOBAL, user.id, bucketTime);
-            await computePortfolioSnapshot(PortfolioScope.SHADOW_USER, user.id, bucketTime);
-        }
-
-        log.info(
-            { userCount: followedUsers.length, bucketTime },
-            "All portfolio snapshots computed"
-        );
+        log.info({ bucketTime }, "Global portfolio snapshot computed");
     } catch (err) {
         log.error({ err }, "Failed to compute all snapshots");
     }

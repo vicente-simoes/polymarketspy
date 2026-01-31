@@ -1,6 +1,5 @@
 import { createWorker } from "../queue/queues.js";
 import { QUEUE_NAMES } from "../queue/queues.js";
-import { applyShadowTrade, applyShadowActivity } from "./shadow.js";
 import { createChildLogger } from "../log/logger.js";
 import { queues } from "../queue/queues.js";
 
@@ -46,14 +45,10 @@ function isActivityPayload(payload: IngestEventPayload): payload is ProcessActiv
  * Worker that processes ingested events (trades and activities).
  *
  * For trades:
- * 1. Apply to shadow ledger
- * 2. Enqueue for aggregation (executable simulation)
- * 3. Enqueue for portfolio snapshot update
+ * 1. Enqueue for aggregation (executable simulation)
  *
  * For activities (MERGE/SPLIT/REDEEM):
- * 1. Apply to shadow ledger
- * 2. Enqueue for aggregation (if applicable)
- * 3. Enqueue for portfolio snapshot update
+ * 1. Enqueue for aggregation (if applicable)
  */
 export const ingestEventsWorker = createWorker<IngestEventPayload>(
     QUEUE_NAMES.INGEST_EVENTS,
@@ -80,11 +75,7 @@ async function processTradeEvent(
     const { tradeEventId, followedUserId } = payload;
     const log = logger.child({ tradeEventId, followedUserId, jobId });
 
-    // Step 1: Apply to shadow ledger
-    log.debug("Applying trade to shadow ledger");
-    await applyShadowTrade(tradeEventId, followedUserId);
-
-    // Step 2: Enqueue for aggregation / executable simulation
+    // Step 1: Enqueue for aggregation / executable simulation
     log.debug("Enqueueing trade for aggregation");
     await queues.groupEvents.add("aggregate-trade", {
         tradeEventId,
@@ -104,11 +95,7 @@ async function processActivityEvent(
     const { activityEventId, followedUserId, activityType } = payload;
     const log = logger.child({ activityEventId, followedUserId, activityType, jobId });
 
-    // Step 1: Apply to shadow ledger
-    log.debug("Applying activity to shadow ledger");
-    await applyShadowActivity(activityEventId, followedUserId);
-
-    // Step 2: Enqueue for aggregation (MERGE/SPLIT can be copied if applicable)
+    // Step 1: Enqueue for aggregation (MERGE/SPLIT can be copied if applicable)
     // For now, we only aggregate trades. Activity aggregation can be added later.
     if (activityType === "MERGE" || activityType === "SPLIT") {
         log.debug("Enqueueing activity for aggregation");

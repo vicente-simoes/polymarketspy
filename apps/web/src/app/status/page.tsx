@@ -123,7 +123,7 @@ export default function StatusPage() {
     const { data: status, error, isLoading } = useSWR<StatusResponse>(
         "/api/status",
         fetcher,
-        { refreshInterval: 10000 }
+        { refreshInterval: 30000 }
     )
 
     return (
