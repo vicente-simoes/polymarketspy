@@ -40,6 +40,11 @@ enum CopySourceType {
   AGGREGATOR  // Came from 250ms aggregator (buffer disabled)
 }
 
+enum BookSource {
+  WS
+  REST
+}
+
 enum EnrichmentStatus {
   PENDING   // WS-first, minimal data only
   ENRICHED  // Market metadata filled
@@ -224,6 +229,9 @@ model CopyAttempt {
 
   sourceType              CopySourceType @default(AGGREGATOR)
   bufferedTradeCount      Int            @default(1)  // meaningful when sourceType=BUFFER
+
+  bookSource              BookSource?
+  usedRestFallback        Boolean     @default(false)
 
   targetNotionalMicros    BigInt
   filledNotionalMicros    BigInt      @default(0)

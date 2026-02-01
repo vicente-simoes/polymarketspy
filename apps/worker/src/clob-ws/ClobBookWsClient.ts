@@ -371,10 +371,17 @@ export class ClobBookWsClient {
      */
     private handleDisconnect(): void {
         this.clearTimers();
+        this.awaitingPong = false;
 
         // Update metrics
         this.metrics.disconnectCount++;
         this.metrics.lastDisconnectedAt = Date.now();
+
+        // IMPORTANT: We apply delta semantics to in-memory book state.
+        // If we miss deltas (e.g. during disconnect/reconnect), stale levels can
+        // persist and produce crossed books (bestBid > bestAsk). Always reset
+        // local state on disconnect so the next updates rebuild from scratch.
+        this.bookStates.clear();
 
         // Move active subscriptions to pending for resubscription
         for (const tokenId of this.activeSubscriptions) {
@@ -601,6 +608,16 @@ export class ClobBookWsClient {
             );
         }
 
+        // Many CLOB WS feeds send full-book snapshots (not deltas). If we treat
+        // snapshots as deltas, stale price levels accumulate and can produce
+        // crossed books (bestBid > bestAsk). When both sides are present, treat
+        // this message as authoritative snapshot and rebuild local state.
+        const hasFullSnapshot = Boolean(message.bids && message.asks);
+        if (hasFullSnapshot) {
+            state.bids.clear();
+            state.asks.clear();
+        }
+
         // Apply bid updates
         if (message.bids) {
             this.applyLevelUpdates(state.bids, message.bids);
@@ -618,6 +635,25 @@ export class ClobBookWsClient {
 
         // Convert to NormalizedBook and update cache
         const normalizedBook = this.stateToNormalizedBook(state);
+        if (normalizedBook.spreadMicros < 0) {
+            // Never publish crossed books to the cache. Reset local state and
+            // wait for the next full snapshot (or fall back to REST upstream).
+            logger.warn(
+                {
+                    tokenId,
+                    bestBidMicros: normalizedBook.bestBidMicros,
+                    bestAskMicros: normalizedBook.bestAskMicros,
+                    spreadMicros: normalizedBook.spreadMicros,
+                    hasFullSnapshot,
+                    eventType: message.event_type,
+                },
+                "Crossed WS book detected; clearing local state and skipping cache update"
+            );
+            state.bids.clear();
+            state.asks.clear();
+            state.lastUpdateAt = 0;
+            return;
+        }
         this.cache.update(normalizedBook);
 
         // Log periodically or on first meaningful update
@@ -630,6 +666,7 @@ export class ClobBookWsClient {
                     bestBid: normalizedBook.bestBidMicros / 1_000_000,
                     bestAsk: normalizedBook.bestAskMicros / 1_000_000,
                     spread: normalizedBook.spreadMicros / 1_000_000,
+                    hasFullSnapshot,
                     updateCount: this.metrics.bookUpdateCount,
                 },
                 "Book state updated"

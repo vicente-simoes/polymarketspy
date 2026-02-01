@@ -10,11 +10,13 @@
  * 6. Write CopyAttempt and ledger entries
  */
 
-import { TradeSide, PortfolioScope, CopyDecision } from "@prisma/client";
+import { TradeSide, PortfolioScope, CopyDecision, BookSource } from "@prisma/client";
 import { ReasonCodes, type ReasonCode } from "@copybot/shared";
 import { prisma } from "../db/prisma.js";
 import { createLedgerEntryIfNotExistsAndUpdateCaches } from "../db/ledger.js";
 import { createChildLogger } from "../log/logger.js";
+import { env } from "../config/env.js";
+import { CLOB_PRIORITY_EXECUTOR } from "../http/limiters.js";
 import { getSystemConfig } from "../config/system.js";
 import { getGlobalConfig, getUserConfig } from "./config.js";
 import {
@@ -28,7 +30,7 @@ import {
     type SimulationResult,
 } from "./book.js";
 import { getBook } from "./bookService.js";
-import type { NormalizedBook } from "./bookUtils.js";
+import { normalizeOrderBook, type NormalizedBook } from "./bookUtils.js";
 import {
     checkSpreadFilter,
     checkMaxBuyCostPerShare,
@@ -41,6 +43,7 @@ import {
     type PortfolioState,
 } from "./guardrails.js";
 import type { TradeEventGroup, ActivityEventGroup, EventGroup, CopySourceType } from "./types.js";
+import { fetchOrderBook } from "../poly/index.js";
 
 const logger = createChildLogger({ module: "executor" });
 
@@ -391,11 +394,12 @@ export async function executeTradeGroup(
     // Uses cache-first approach: WS cache if available, REST fallback
     log.debug("Fetching order book (cache-first)");
     const bookFetchStartedAtMs = Date.now();
-    const bookResult = await getBook(effectiveTokenId, {
+    let bookResult = await getBook(effectiveTokenId, {
         waitMs: 500,
         freshnessMs: 2000,
     });
-    const bookFetchElapsedMs = Date.now() - bookFetchStartedAtMs;
+    let bookFetchElapsedMs = Date.now() - bookFetchStartedAtMs;
+    let usedRestFallback = false;
 
     if (!bookResult.book) {
         log.warn("Order book not available (market may be resolved)");
@@ -410,7 +414,71 @@ export async function executeTradeGroup(
         };
     }
 
-    const book: NormalizedBook = bookResult.book;
+    let book: NormalizedBook = bookResult.book;
+
+    // Safety: WS cache can get into an invalid/crossed state (bestBid > bestAsk),
+    // typically due to missing deltas during reconnects. Never simulate/execute
+    // against a crossed book; instead, fall back to REST (source of truth).
+    if (bookResult.source === "WS" && book.spreadMicros < 0) {
+        const bookAgeMs = book.updatedAt > 0 ? Date.now() - book.updatedAt : null;
+        log.warn(
+            {
+                bestBidMicros: book.bestBidMicros,
+                bestAskMicros: book.bestAskMicros,
+                spreadMicros: book.spreadMicros,
+                bookAgeMs,
+                bookStale: bookResult.stale,
+            },
+            "Crossed/invalid WS book detected; falling back to REST"
+        );
+
+        const restFetchStartedAtMs = Date.now();
+        const rawRestBook = await fetchOrderBook(effectiveTokenId, { priority: CLOB_PRIORITY_EXECUTOR });
+        const restFetchElapsedMs = Date.now() - restFetchStartedAtMs;
+        bookFetchElapsedMs += restFetchElapsedMs;
+
+        if (!rawRestBook) {
+            log.warn(
+                { restFetchElapsedMs },
+                "REST order book unavailable after crossed WS book"
+            );
+            return {
+                decision: CopyDecision.SKIP,
+                reasonCodes: [ReasonCodes.NO_LIQUIDITY_WITHIN_BOUNDS],
+                targetNotionalMicros: targetResult.targetNotionalMicros,
+                filledNotionalMicros: BigInt(0),
+                filledShareMicros: BigInt(0),
+                vwapPriceMicros: 0,
+                filledRatioBps: 0,
+            };
+        }
+
+        book = normalizeOrderBook(rawRestBook, "REST");
+        if (book.spreadMicros < 0) {
+            log.error(
+                {
+                    bestBidMicros: book.bestBidMicros,
+                    bestAskMicros: book.bestAskMicros,
+                    spreadMicros: book.spreadMicros,
+                },
+                "REST order book is crossed; refusing to simulate/execute"
+            );
+            return {
+                decision: CopyDecision.SKIP,
+                reasonCodes: [ReasonCodes.NO_LIQUIDITY_WITHIN_BOUNDS],
+                targetNotionalMicros: targetResult.targetNotionalMicros,
+                filledNotionalMicros: BigInt(0),
+                filledShareMicros: BigInt(0),
+                vwapPriceMicros: 0,
+                filledRatioBps: 0,
+            };
+        }
+        bookResult = { book, source: "REST", stale: false };
+        usedRestFallback = true;
+    } else if (bookResult.source === "REST" && env.CLOB_BOOK_WS_ENABLED) {
+        // WS enabled but we had to use REST (cache miss/placeholder).
+        usedRestFallback = true;
+    }
 
     // 6. Extract metrics from the normalized book
     const { midPriceMicros, bestBidMicros, bestAskMicros, spreadMicros } = book;
@@ -466,6 +534,7 @@ export async function executeTradeGroup(
             bookSource: bookResult.source,
             bookStale: bookResult.stale,
             bookFetchElapsedMs,
+            usedRestFallback,
 
             // Source type
             sourceType,
@@ -596,6 +665,8 @@ export async function executeTradeGroup(
         reasonCodes: uniqueReasons,
         sourceType,
         bufferedTradeCount,
+        bookSource: bookResult.source ? (bookResult.source === "WS" ? BookSource.WS : BookSource.REST) : null,
+        usedRestFallback,
         targetNotionalMicros: targetResult.targetNotionalMicros,
         filledNotionalMicros: decision === CopyDecision.EXECUTE ? simulation.filledNotionalMicros : BigInt(0),
         vwapPriceMicros: decision === CopyDecision.EXECUTE ? simulation.vwapPriceMicros : null,
@@ -619,6 +690,8 @@ export async function executeTradeGroup(
             update: {
                 decision,
                 reasonCodes: uniqueReasons,
+                bookSource: bookResult.source ? (bookResult.source === "WS" ? BookSource.WS : BookSource.REST) : null,
+                usedRestFallback,
                 filledNotionalMicros: decision === CopyDecision.EXECUTE ? simulation.filledNotionalMicros : BigInt(0),
                 vwapPriceMicros: decision === CopyDecision.EXECUTE ? simulation.vwapPriceMicros : null,
                 filledRatioBps: decision === CopyDecision.EXECUTE ? simulation.filledRatioBps : 0,
@@ -640,6 +713,8 @@ export async function executeTradeGroup(
                 data: {
                     decision,
                     reasonCodes: uniqueReasons,
+                    bookSource: bookResult.source ? (bookResult.source === "WS" ? BookSource.WS : BookSource.REST) : null,
+                    usedRestFallback,
                     filledNotionalMicros: decision === CopyDecision.EXECUTE ? simulation.filledNotionalMicros : BigInt(0),
                     vwapPriceMicros: decision === CopyDecision.EXECUTE ? simulation.vwapPriceMicros : null,
                     filledRatioBps: decision === CopyDecision.EXECUTE ? simulation.filledRatioBps : 0,

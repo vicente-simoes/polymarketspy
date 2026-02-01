@@ -7,6 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { getBook, getBookServiceStats, stopBookService, type BookFetchResult } from "./bookService.js";
 import { OrderBookCache, resetOrderBookCache } from "../clob-ws/OrderBookCache.js";
+import { CLOB_PRIORITY_EXECUTOR } from "../http/limiters.js";
 import type { NormalizedBook } from "./bookUtils.js";
 
 // Mock the env module with all required fields
@@ -72,7 +73,7 @@ describe("bookService", () => {
             expect(result.book).not.toBeNull();
             expect(result.source).toBe("REST");
             expect(result.stale).toBe(false);
-            expect(mockFetchOrderBook).toHaveBeenCalledWith("token1");
+            expect(mockFetchOrderBook).toHaveBeenCalledWith("token1", { priority: CLOB_PRIORITY_EXECUTOR });
         });
 
         it("should normalize the REST response correctly", async () => {
