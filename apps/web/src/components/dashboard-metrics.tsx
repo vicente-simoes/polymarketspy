@@ -5,7 +5,7 @@ import useSWR from 'swr'
 import { fetcher } from '@/lib/fetcher'
 
 export function DashboardMetrics() {
-  const { data, error, isLoading } = useSWR('/api/overview', fetcher, { refreshInterval: 10000 })
+  const { data, error, isLoading } = useSWR('/api/overview', fetcher, { refreshInterval: 30000 })
 
   if (isLoading) return <div className="p-4 md:p-6 bg-[#0D0D0D] rounded-2xl text-gray-400">Loading metrics...</div>
   if (error) return <div className="p-4 md:p-6 bg-[#0D0D0D] rounded-2xl text-red-500">Failed to load metrics</div>

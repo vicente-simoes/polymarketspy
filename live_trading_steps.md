@@ -18,7 +18,8 @@ The goal is that **if you implement every step below**, you will have:
 - **PAPER**: current simulated copy execution path (existing behavior).
 - **LIVE**: real authenticated CLOB execution path (new).
 - **TradingMode**: `PAPER | LIVE` (new DB dimension; used everywhere).
-- **PortfolioScope**: keep existing scope semantics. This is **orthogonal** to `TradingMode`.
+- **PortfolioScope**: remains a DB dimension, but current code uses `EXEC_GLOBAL` only for execution + portfolio read models; `SHADOW_USER` is deprecated/unused and `EXEC_USER` is legacy. Live trading must not rely on shadow portfolios (attribution is via `followedUserId`).
+- **SizingMode**: FIXED_RATE only for MVP (budgeted dynamic sizing is currently disabled in code and would require a redesign to re-enable).
 
 ### 0.2 MVP live choices (do not deviate)
 - **Do not rely on `clientOrderId` lookup** on the exchange. Dedupe is our DB `idempotencyKey`. Reconciliation is via `clobOrderId` + open-orders/trades scanning.
@@ -62,20 +63,29 @@ The goal is that **if you implement every step below**, you will have:
 - Add `tradingMode TradingMode` to:
   - `CopyAttempt`
   - `LedgerEntry`
-  - `PortfolioSnapshot`
+  - `GlobalPortfolioState`
+  - `CurrentPosition`
+  - `CurrentPositionByLeader`
+  - `EquityPoint`
   - `GuardrailConfig`
   - `CopySizingConfig`
 - Update uniqueness:
   - `CopyAttempt`: uniqueness should include `tradingMode`.
   - `LedgerEntry`: uniqueness should include `tradingMode`.
-  - `PortfolioSnapshot`: uniqueness should include `tradingMode`.
+  - `GlobalPortfolioState`: uniqueness should include `tradingMode` (paper vs live cash/baseline must not collide).
+  - `CurrentPosition`: uniqueness should include `tradingMode`.
+  - `CurrentPositionByLeader`: uniqueness should include `tradingMode`.
+  - `EquityPoint`: uniqueness should include `tradingMode`.
+
+**Note on legacy tables:**
+- `PortfolioSnapshot` exists in the schema but current UI reads from `GlobalPortfolioState`/`CurrentPosition`/`EquityPoint`. We should not expand `PortfolioSnapshot` for live; either keep it as legacy or remove it in a cleanup migration.
 
 **Backfill:**
 - Default all existing rows to `tradingMode=PAPER`.
 
 **Done when:**
 - Migration applies cleanly.
-- Existing UI/queries still return the same paper results (now filtering `tradingMode=PAPER` where needed).
+- Existing UI/queries still return the same paper results (now filtering `tradingMode=PAPER` where needed, especially on the portfolio read models + equity curve).
 
 ### 2.2 Create live persistence tables
 **Goal:** store the complete live execution trail.
@@ -104,11 +114,20 @@ The goal is that **if you implement every step below**, you will have:
 ### 2.3 Create “real portfolio” caches/snapshots
 **Goal:** power Real Portfolio UI from authoritative exchange state.
 
-**Add tables (minimum):**
-- `RealPositionSnapshot`
-  - `id`, `bucketTime` (or `asOf`), `tokenId`, `shareMicros`, plus optional metadata fields you want for debugging (source, fetchedAt).
+**Approach (match current paper architecture):**
+- The Real Portfolio UI should read from the same portfolio read models as paper, but with `tradingMode=LIVE`:
+  - `GlobalPortfolioState(tradingMode=LIVE, portfolioScope=EXEC_GLOBAL)` for cash + baseline/contributed capital
+  - `CurrentPosition(tradingMode=LIVE, assetId)` for net positions
+  - `EquityPoint(tradingMode=LIVE, granularity, bucketTime)` for the PnL curve
+- `CurrentPrice` stays shared across modes (it is just market marks).
+
+**Add tables (live-only, minimum):**
 - `TokenTradingParamsCache`
   - `tokenId` (unique), `tickSizeMicros`, `minOrderSizeShareMicros`, `sizeStepShareMicros`, `updatedAt`
+
+**Optional but recommended (audit/debug):**
+- `RealPositionSnapshot` (raw exchange positions)
+  - `id`, `bucketTime` (or `asOf`), `tokenId`, `shareMicros`, plus optional metadata fields you want for debugging (source, fetchedAt).
 
 **Baseline storage (choose one, be explicit):**
 - Store live baseline in `SystemCheckpoint` keys (recommended for MVP):
@@ -118,8 +137,9 @@ The goal is that **if you implement every step below**, you will have:
 
 **Done when:**
 - A reconciliation process can write:
-  - `PortfolioSnapshot(tradingMode=LIVE, portfolioScope=EXEC_GLOBAL, followedUserId=NULL)`
-  - `RealPositionSnapshot` rows
+  - `GlobalPortfolioState(tradingMode=LIVE, portfolioScope=EXEC_GLOBAL)`
+  - `CurrentPosition(tradingMode=LIVE, ...)` rows
+  - `EquityPoint(tradingMode=LIVE, ...)` rows (via the equity-point loop)
   - `TokenTradingParamsCache` rows
 
 ---
@@ -347,15 +367,16 @@ The goal is that **if you implement every step below**, you will have:
   - TS client first
   - Data API fallback for positions (map to token IDs as needed)
 - Write:
-  - `RealPositionSnapshot` (latest/bucketed)
-  - `PortfolioSnapshot(tradingMode=LIVE, portfolioScope=EXEC_GLOBAL, followedUserId=NULL)`
+  - `GlobalPortfolioState(tradingMode=LIVE, portfolioScope=EXEC_GLOBAL)` (cash + contributed capital/baseline)
+  - `CurrentPosition(tradingMode=LIVE, ...)` (net positions, derived from exchange truth)
+  - (optional) `RealPositionSnapshot` (latest/bucketed raw exchange positions for audit/debug)
 - Update `LiveAccountStateCache` from the authoritative snapshot (correct drift).
 - Compute and persist ledger-vs-exchange diffs for debugging and surface them in the UI.
 - Health gating:
   - if this fails → set live unhealthy, do not place orders.
 
 **Done when:**
-- Real Portfolio page can be driven entirely from these snapshots.
+- Real Portfolio page can be driven entirely from these read models (and is clearly labeled as exchange-authoritative).
 
 ---
 
@@ -422,6 +443,7 @@ The goal is that **if you implement every step below**, you will have:
 - Rename Copy Attempts → Paper Trades.
 - Rename Portfolio → Paper Portfolio.
 - Add redirects from old routes.
+- Keep (and reuse) the decision-time book provenance indicators: `CopyAttempt.bookSource` and `CopyAttempt.usedRestFallback` should be visible on both Paper Trades and Live Trades rows.
 
 **Done when:**
 - No broken links; existing pages still work.
@@ -442,6 +464,7 @@ The goal is that **if you implement every step below**, you will have:
   - Live Orders
   - Live Fills (APP vs EXTERNAL)
   - Skipped/Rejected (reason codes)
+  - Include a small `WS`/`REST` badge and a REST-fallback indicator when the decision used a REST book due to WS invalidity/staleness.
 
 **Done when:**
 - A live order placed by the worker is visible here with fills and status.

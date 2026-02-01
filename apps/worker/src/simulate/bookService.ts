@@ -12,6 +12,7 @@
 
 import { env } from "../config/env.js";
 import { createChildLogger } from "../log/logger.js";
+import { CLOB_PRIORITY_EXECUTOR } from "../http/limiters.js";
 import { fetchOrderBook } from "../poly/index.js";
 import {
     getOrderBookCache,
@@ -143,7 +144,7 @@ export async function getBook(
 
     // Fall back to REST
     try {
-        const rawBook = await fetchOrderBook(tokenId);
+        const rawBook = await fetchOrderBook(tokenId, { priority: CLOB_PRIORITY_EXECUTOR });
 
         if (!rawBook) {
             log.warn("REST returned null (market may be resolved)");

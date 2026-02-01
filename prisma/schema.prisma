@@ -40,6 +40,11 @@ enum CopySourceType {
   AGGREGATOR  // Came from 250ms aggregator (buffer disabled)
 }
 
+enum BookSource {
+  WS
+  REST
+}
+
 enum EnrichmentStatus {
   PENDING   // WS-first, minimal data only
   ENRICHED  // Market metadata filled
@@ -54,6 +59,14 @@ enum LedgerEntryType {
   FEE
   MARK
   SETTLEMENT
+}
+
+enum EquityPointGranularity {
+  M1
+  M20
+  H2
+  H12
+  D1
 }
 
 model FollowedUser {
@@ -217,6 +230,9 @@ model CopyAttempt {
   sourceType              CopySourceType @default(AGGREGATOR)
   bufferedTradeCount      Int            @default(1)  // meaningful when sourceType=BUFFER
 
+  bookSource              BookSource?
+  usedRestFallback        Boolean     @default(false)
+
   targetNotionalMicros    BigInt
   filledNotionalMicros    BigInt      @default(0)
   vwapPriceMicros         Int?        // set when executed/partial
@@ -265,6 +281,7 @@ model LedgerEntry {
 
   @@index([portfolioScope, createdAt])
   @@index([assetId, createdAt])
+  @@index([portfolioScope, assetId, entryType, createdAt])
   @@unique([portfolioScope, refId, entryType])
 }
 
@@ -293,6 +310,53 @@ model MarketPriceSnapshot {
 
   @@index([assetId, bucketTime])
   @@unique([assetId, bucketTime])
+}
+
+model CurrentPrice {
+  assetId             String @id
+  midpointPriceMicros Int
+  updatedAt           DateTime @updatedAt
+}
+
+model CurrentPosition {
+  assetId          String @id
+  marketId         String?
+  shareMicros      BigInt
+  netCashFlowMicros BigInt
+  updatedAt        DateTime @updatedAt
+
+  @@index([marketId])
+}
+
+model CurrentPositionByLeader {
+  assetId          String
+  followedUserId   String
+  marketId         String?
+  shareMicros      BigInt
+  netCashFlowMicros BigInt
+  updatedAt        DateTime @updatedAt
+
+  @@id([assetId, followedUserId])
+  @@index([followedUserId])
+  @@index([marketId])
+}
+
+model GlobalPortfolioState {
+  id                     String @id
+  cashMicros              BigInt
+  contributedCapitalMicros BigInt
+  updatedAt               DateTime @updatedAt
+}
+
+model EquityPoint {
+  granularity             EquityPointGranularity
+  bucketTime              DateTime
+  equityMicros            BigInt
+  contributedCapitalMicros BigInt
+  pnlMicros               BigInt
+  updatedAt               DateTime @updatedAt
+
+  @@id([granularity, bucketTime])
 }
 
 model SystemCheckpoint {

@@ -14,6 +14,13 @@ import { logger } from "../log/logger.js";
  */
 
 /**
+ * Job priorities for CLOB REST requests that share the low-priority limiter.
+ * Lower number = higher priority (Bottleneck convention).
+ */
+export const CLOB_PRIORITY_EXECUTOR = 0;
+export const CLOB_PRIORITY_BACKGROUND = 9;
+
+/**
  * High-priority limiter for trade/activity ingestion.
  * These requests are time-sensitive for lag detection.
  */

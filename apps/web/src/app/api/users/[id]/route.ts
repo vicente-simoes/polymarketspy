@@ -28,55 +28,9 @@ export async function GET(
         }
 
         const wallets = [user.profileWallet, ...user.proxies.map((proxy) => proxy.wallet)]
-
-        const snapshotRows = await prisma.portfolioSnapshot.findMany({
-            where: {
-                followedUserId: id,
-                portfolioScope: { in: ["SHADOW_USER", "EXEC_GLOBAL"] }
-            },
-            orderBy: { bucketTime: "desc" },
-            take: 180
-        })
-
-        const orderedSnapshots = [...snapshotRows].sort(
-            (a, b) => a.bucketTime.getTime() - b.bucketTime.getTime()
-        )
-
-        const shadowByTime = new Map<number, number>()
-        const execByTime = new Map<number, number>()
-
-        let latestShadow = null as typeof snapshotRows[number] | null
-        let latestExec = null as typeof snapshotRows[number] | null
-
-        for (const snapshot of orderedSnapshots) {
-            const ts = snapshot.bucketTime.getTime()
-            if (snapshot.portfolioScope === "SHADOW_USER") {
-                shadowByTime.set(ts, Number(snapshot.equityMicros) / 1_000_000)
-                if (!latestShadow || snapshot.bucketTime > latestShadow.bucketTime) {
-                    latestShadow = snapshot
-                }
-            } else if (snapshot.portfolioScope === "EXEC_GLOBAL") {
-                execByTime.set(ts, Number(snapshot.equityMicros) / 1_000_000)
-                if (!latestExec || snapshot.bucketTime > latestExec.bucketTime) {
-                    latestExec = snapshot
-                }
-            }
-        }
-
-        const timeline = Array.from(
-            new Set([...shadowByTime.keys(), ...execByTime.keys()])
-        ).sort((a, b) => a - b)
-
-        const equityCurve = timeline.map((ts) => {
-            const shadow = shadowByTime.get(ts) ?? 0
-            const exec = execByTime.get(ts) ?? 0
-            return {
-                ts,
-                shadow,
-                exec,
-                gap: shadow - exec
-            }
-        })
+        // Shadow portfolios are removed and per-user snapshots are no longer written.
+        // Keep the response shape stable but return an empty equity curve for now.
+        const equityCurve: { ts: number; shadow: number; exec: number; gap: number }[] = []
 
         const [
             totalAttempts,
@@ -88,8 +42,7 @@ export async function GET(
             skipAttempts,
             recentTrades,
             recentAttempts,
-            shadowPositionsRaw,
-            execPositionsRaw
+            leaderPositions
         ] = await Promise.all([
             prisma.copyAttempt.count({
                 where: { followedUserId: id, portfolioScope: "EXEC_GLOBAL" }
@@ -167,30 +120,12 @@ export async function GET(
                 orderBy: { createdAt: "desc" },
                 take: 30
             }),
-            prisma.ledgerEntry.groupBy({
-                by: ["assetId"],
-                where: { portfolioScope: "SHADOW_USER", followedUserId: id },
-                _sum: {
-                    shareDeltaMicros: true,
-                    cashDeltaMicros: true
-                },
-                having: {
-                    shareDeltaMicros: {
-                        _sum: { not: { equals: 0 } }
-                    }
-                }
-            }),
-            prisma.ledgerEntry.groupBy({
-                by: ["assetId"],
-                where: { portfolioScope: "EXEC_GLOBAL", followedUserId: id },
-                _sum: {
-                    shareDeltaMicros: true,
-                    cashDeltaMicros: true
-                },
-                having: {
-                    shareDeltaMicros: {
-                        _sum: { not: { equals: 0 } }
-                    }
+            prisma.currentPositionByLeader.findMany({
+                where: { followedUserId: id },
+                select: {
+                    assetId: true,
+                    shareMicros: true,
+                    netCashFlowMicros: true
                 }
             })
         ])
@@ -275,10 +210,10 @@ export async function GET(
             }
         }
 
-        const assetIds = [
-            ...shadowPositionsRaw.map((row) => row.assetId),
-            ...execPositionsRaw.map((row) => row.assetId)
-        ].filter((assetId): assetId is string => Boolean(assetId))
+        const openLeaderPositions = leaderPositions.filter(
+            (row) => row.shareMicros !== BigInt(0)
+        )
+        const assetIds = openLeaderPositions.map((row) => row.assetId)
 
         const tokenMetadata = assetIds.length
             ? await prisma.tokenMetadataCache.findMany({
@@ -292,22 +227,49 @@ export async function GET(
             : []
         const tokenMetadataMap = new Map(tokenMetadata.map((meta) => [meta.tokenId, meta]))
 
-        const formatPositions = (rows: typeof shadowPositionsRaw) =>
-            rows
-                .filter((row) => row.assetId)
-                .map((row) => {
-                    const meta = tokenMetadataMap.get(row.assetId!)
-                    const shares = Number(row._sum.shareDeltaMicros ?? 0) / 1_000_000
-                    const netCashFlow = Number(row._sum.cashDeltaMicros ?? 0) / 1_000_000
+        const priceRows = assetIds.length
+            ? await prisma.currentPrice.findMany({
+                  where: { assetId: { in: assetIds } },
+                  select: { assetId: true, midpointPriceMicros: true }
+              })
+            : []
+        const priceByAsset = new Map(priceRows.map((row) => [row.assetId, row.midpointPriceMicros]))
 
-                    return {
-                        assetId: row.assetId,
-                        shares,
-                        invested: -netCashFlow,
-                        marketTitle: meta?.marketTitle || "Unknown Market",
-                        outcome: meta?.outcomeLabel || "Unknown"
-                    }
-                })
+        const MICROS_PER_UNIT = BigInt(1_000_000)
+        const DEFAULT_MARK_PRICE_MICROS = 500_000 // $0.50
+
+        let execEquityMicros = BigInt(0)
+        let execRealizedPnlMicros = BigInt(0)
+        let execExposureMicros = BigInt(0)
+
+        for (const row of leaderPositions) {
+            let marketValueMicros = BigInt(0)
+            if (row.shareMicros !== BigInt(0)) {
+                const priceMicros = priceByAsset.get(row.assetId) ?? DEFAULT_MARK_PRICE_MICROS
+                marketValueMicros = (row.shareMicros * BigInt(priceMicros)) / MICROS_PER_UNIT
+                const abs = marketValueMicros < BigInt(0) ? -marketValueMicros : marketValueMicros
+                execExposureMicros += abs
+            } else {
+                execRealizedPnlMicros += row.netCashFlowMicros
+            }
+            execEquityMicros += row.netCashFlowMicros + marketValueMicros
+        }
+
+        const execUnrealizedPnlMicros = execEquityMicros - execRealizedPnlMicros
+
+        const execPositions = openLeaderPositions.map((row) => {
+            const meta = tokenMetadataMap.get(row.assetId)
+            const shares = Number(row.shareMicros) / 1_000_000
+            const netCashFlow = Number(row.netCashFlowMicros) / 1_000_000
+
+            return {
+                assetId: row.assetId,
+                shares,
+                invested: -netCashFlow,
+                marketTitle: meta?.marketTitle || "Unknown Market",
+                outcome: meta?.outcomeLabel || "Unknown"
+            }
+        })
 
         const recentTradesFormatted = recentTrades.map((trade) => ({
             id: trade.id,
@@ -334,91 +296,28 @@ export async function GET(
             createdAt: attempt.createdAt.getTime()
         }))
 
-        // ─── BUDGETED DYNAMIC OBSERVABILITY ────────────────────────────────────
-        // Load effective sizing config (global + user overrides)
-        const [globalSizingRow, userSizingRow] = await Promise.all([
-            prisma.copySizingConfig.findFirst({
-                where: { scope: "GLOBAL", followedUserId: null },
-                orderBy: { updatedAt: "desc" }
-            }),
-            prisma.copySizingConfig.findFirst({
-                where: { scope: "GLOBAL", followedUserId: id },
-                orderBy: { updatedAt: "desc" }
-            })
-        ])
-
-        const globalSizing = (globalSizingRow?.configJson || {}) as Record<string, any>
-        const userSizing = (userSizingRow?.configJson || {}) as Record<string, any>
-
-        // Merge: global + user overrides (user takes precedence except budgetedDynamicEnabled)
-        const effectiveSizing: Record<string, any> = {
-            ...globalSizing,
-            ...userSizing,
-            // budgetedDynamicEnabled is always from global (per spec)
-            budgetedDynamicEnabled: globalSizing.budgetedDynamicEnabled ?? false
-        }
-
-        const budgetedDynamicEnabled = Boolean(effectiveSizing.budgetedDynamicEnabled)
-        const sizingMode = (effectiveSizing.sizingMode as string) ?? "fixedRate"
-        const budgetUsdcMicros = Number(effectiveSizing.budgetUsdcMicros ?? 0)
-        const budgetRMinBps = Number(effectiveSizing.budgetRMinBps ?? 0)
-        const budgetRMaxBps = Number(effectiveSizing.budgetRMaxBps ?? 100)
-        const budgetEnforcement = (effectiveSizing.budgetEnforcement as string) ?? "hard"
-
-        // Leader exposure from SHADOW_USER snapshot
-        const leaderExposureMicros = latestShadow
-            ? Number(latestShadow.exposureMicros)
-            : 0
-
-        // Current copy exposure from EXEC_GLOBAL snapshot
-        const currentCopyExposureMicros = latestExec
-            ? Number(latestExec.exposureMicros)
-            : 0
-
-        // Compute effective rate (only meaningful when budgeted dynamic is active)
-        let effectiveRateBps = 0
-        if (budgetedDynamicEnabled && sizingMode === "budgetedDynamic" && leaderExposureMicros > 0) {
-            // r = budget / leaderExposure, clamped to [rMin, rMax]
-            const rawRateBps = Math.floor((budgetUsdcMicros / leaderExposureMicros) * 10000)
-            effectiveRateBps = Math.max(budgetRMinBps, Math.min(budgetRMaxBps, rawRateBps))
-        } else if (budgetedDynamicEnabled && sizingMode === "budgetedDynamic" && leaderExposureMicros <= 0) {
-            // No exposure: use rMax (bounded behavior)
-            effectiveRateBps = budgetRMaxBps
-        }
-
-        // Headroom: budget - current copy exposure (only meaningful for HARD enforcement)
-        const headroomMicros = budgetUsdcMicros - currentCopyExposureMicros
-
         const budgetedDynamic = {
-            enabled: budgetedDynamicEnabled,
-            sizingMode,
-            budgetUsd: budgetUsdcMicros / 1_000_000,
-            leaderExposureUsd: leaderExposureMicros / 1_000_000,
-            currentCopyExposureUsd: currentCopyExposureMicros / 1_000_000,
-            effectiveRatePct: effectiveRateBps / 100,
-            headroomUsd: headroomMicros / 1_000_000,
-            budgetEnforcement,
-            rMinPct: budgetRMinBps / 100,
-            rMaxPct: budgetRMaxBps / 100
+            enabled: false,
+            sizingMode: "fixedRate",
+            budgetUsd: 0,
+            leaderExposureUsd: 0,
+            currentCopyExposureUsd: 0,
+            effectiveRatePct: 0,
+            headroomUsd: 0,
+            budgetEnforcement: "hard",
+            rMinPct: 0,
+            rMaxPct: 0
         }
 
         return NextResponse.json({
             ...user,
             metrics: {
-                shadowEquity: latestShadow ? Number(latestShadow.equityMicros) / 1_000_000 : 0,
-                execEquity: latestExec ? Number(latestExec.equityMicros) / 1_000_000 : 0,
-                execRealizedPnl: latestExec
-                    ? Number(latestExec.realizedPnlMicros) / 1_000_000
-                    : 0,
-                execUnrealizedPnl: latestExec
-                    ? Number(latestExec.unrealizedPnlMicros) / 1_000_000
-                    : 0,
-                execExposure: latestExec ? Number(latestExec.exposureMicros) / 1_000_000 : 0,
-                lastSnapshotTs: latestExec
-                    ? latestExec.bucketTime.getTime()
-                    : latestShadow
-                      ? latestShadow.bucketTime.getTime()
-                      : null
+                shadowEquity: 0,
+                execEquity: Number(execEquityMicros) / 1_000_000,
+                execRealizedPnl: Number(execRealizedPnlMicros) / 1_000_000,
+                execUnrealizedPnl: Number(execUnrealizedPnlMicros) / 1_000_000,
+                execExposure: Number(execExposureMicros) / 1_000_000,
+                lastSnapshotTs: null
             },
             equityCurve,
             attemptStats: {
@@ -434,8 +333,8 @@ export async function GET(
             lagHistogram,
             skipReasons,
             positions: {
-                shadow: formatPositions(shadowPositionsRaw),
-                exec: formatPositions(execPositionsRaw)
+                shadow: [],
+                exec: execPositions
             },
             recentTrades: recentTradesFormatted,
             recentAttempts: recentAttemptsFormatted,

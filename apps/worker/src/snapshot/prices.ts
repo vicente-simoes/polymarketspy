@@ -1,10 +1,15 @@
 /**
- * Market price snapshot loop.
+ * Current price refresh loop.
  *
- * Every 30 seconds:
+ * Every interval:
  * 1. Get all held assetIds across all portfolios
  * 2. Fetch current prices for those assets
- * 3. Upsert MarketPriceSnapshot bucketed to 30-second intervals
+ * 3. Upsert CurrentPrice (1 row per asset)
+ *
+ * Notes:
+ * - We intentionally avoid storing time-series rows for prices on the hot path.
+ * - Historical price data (if needed) should be stored with explicit retention
+ *   and never queried as "latest" via unbounded scans.
  */
 
 import { prisma } from "../db/prisma.js";
@@ -20,41 +25,19 @@ const logger = createChildLogger({ module: "price-snapshot" });
 const PRICE_REFRESH_INTERVAL_MS = 120_000;
 
 let priceRefreshTimer: ReturnType<typeof setInterval> | null = null;
-
-/**
- * Get the 30-second bucket time for a given timestamp.
- */
-function getBucketTime(timestamp: Date): Date {
-    const ms = timestamp.getTime();
-    const bucketMs = Math.floor(ms / PRICE_REFRESH_INTERVAL_MS) * PRICE_REFRESH_INTERVAL_MS;
-    return new Date(bucketMs);
-}
+let priceRefreshInFlight = false;
+let priceRefreshSkippedWhileInFlight = 0;
 
 /**
  * Get all unique assetIds that are held across any portfolio.
  * An asset is "held" if the sum of shareDeltaMicros != 0.
  */
 async function getHeldAssetIds(): Promise<string[]> {
-    // Get all positions with non-zero holdings
-    const positions = await prisma.ledgerEntry.groupBy({
-        by: ["assetId"],
-        where: {
-            assetId: { not: null },
-        },
-        _sum: {
-            shareDeltaMicros: true,
-        },
+    const positions = await prisma.currentPosition.findMany({
+        where: { shareMicros: { not: 0n } },
+        select: { assetId: true },
     });
-
-    // Filter to only those with non-zero sum
-    const heldAssets: string[] = [];
-    for (const pos of positions) {
-        if (pos.assetId && pos._sum.shareDeltaMicros && pos._sum.shareDeltaMicros !== BigInt(0)) {
-            heldAssets.push(pos.assetId);
-        }
-    }
-
-    return heldAssets;
+    return positions.map((pos) => pos.assetId);
 }
 
 /**
@@ -62,6 +45,22 @@ async function getHeldAssetIds(): Promise<string[]> {
  */
 async function refreshPrices(): Promise<void> {
     const log = logger.child({ operation: "refresh" });
+
+    if (priceRefreshInFlight) {
+        priceRefreshSkippedWhileInFlight++;
+        if (priceRefreshSkippedWhileInFlight === 1) {
+            log.warn("Price refresh already in flight, skipping scheduled run(s)");
+        } else {
+            log.debug(
+                { skippedWhileInFlight: priceRefreshSkippedWhileInFlight },
+                "Price refresh still in flight, skipping"
+            );
+        }
+        return;
+    }
+
+    priceRefreshInFlight = true;
+    const startedAtMs = Date.now();
 
     try {
         // 1. Get held assets
@@ -77,40 +76,39 @@ async function refreshPrices(): Promise<void> {
         // 2. Fetch current prices
         const prices = await fetchPrices(assetIds);
 
-        // 3. Write snapshots
-        const bucketTime = getBucketTime(new Date());
+        // 3. Write current prices
         let successCount = 0;
 
         for (const [assetId, price] of prices.entries()) {
             try {
-                await prisma.marketPriceSnapshot.upsert({
-                    where: {
-                        assetId_bucketTime: {
-                            assetId,
-                            bucketTime,
-                        },
-                    },
-                    create: {
-                        assetId,
-                        bucketTime,
-                        midpointPriceMicros: priceToMicros(price),
-                    },
-                    update: {
-                        midpointPriceMicros: priceToMicros(price),
-                    },
+                await prisma.currentPrice.upsert({
+                    where: { assetId },
+                    create: { assetId, midpointPriceMicros: priceToMicros(price) },
+                    update: { midpointPriceMicros: priceToMicros(price) },
                 });
                 successCount++;
             } catch (err) {
-                log.warn({ err, assetId }, "Failed to write price snapshot");
+                log.warn({ err, assetId }, "Failed to write current price");
             }
         }
 
         log.info(
-            { assetCount: assetIds.length, successCount, bucketTime },
+            { assetCount: assetIds.length, successCount },
             "Price refresh complete"
         );
     } catch (err) {
         log.error({ err }, "Price refresh failed");
+    } finally {
+        const elapsedMs = Date.now() - startedAtMs;
+        log.debug(
+            {
+                elapsedMs,
+                skippedWhileInFlight: priceRefreshSkippedWhileInFlight,
+            },
+            "Price refresh run finished"
+        );
+        priceRefreshInFlight = false;
+        priceRefreshSkippedWhileInFlight = 0;
     }
 }
 
@@ -155,27 +153,23 @@ export function stopPriceRefreshLoop(): void {
  * Get the latest price for an asset.
  */
 export async function getLatestPrice(assetId: string): Promise<number | null> {
-    const snapshot = await prisma.marketPriceSnapshot.findFirst({
+    const price = await prisma.currentPrice.findUnique({
         where: { assetId },
-        orderBy: { bucketTime: "desc" },
+        select: { midpointPriceMicros: true },
     });
-
-    return snapshot?.midpointPriceMicros ?? null;
+    return price?.midpointPriceMicros ?? null;
 }
 
 /**
  * Get the latest prices for multiple assets.
  */
 export async function getLatestPrices(assetIds: string[]): Promise<Map<string, number>> {
-    const prices = new Map<string, number>();
+    if (assetIds.length === 0) return new Map();
 
-    // Get most recent snapshot for each asset
-    for (const assetId of assetIds) {
-        const price = await getLatestPrice(assetId);
-        if (price !== null) {
-            prices.set(assetId, price);
-        }
-    }
+    const rows = await prisma.currentPrice.findMany({
+        where: { assetId: { in: assetIds } },
+        select: { assetId: true, midpointPriceMicros: true },
+    });
 
-    return prices;
+    return new Map(rows.map((row) => [row.assetId, row.midpointPriceMicros]));
 }

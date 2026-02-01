@@ -15,6 +15,8 @@ interface CopyAttemptRow {
     reasonCodes: string[]
     sourceType: "IMMEDIATE" | "BUFFER" | "AGGREGATOR"
     bufferedTradeCount: number
+    bookSource?: "WS" | "REST" | null
+    usedRestFallback?: boolean
     targetNotionalMicros: string | number
     filledNotionalMicros: string | number
     filledRatioBps: number
@@ -284,6 +286,7 @@ export default function CopyAttemptsPage() {
                                                             </div>
                                                             <div className="text-xs text-[#6f6f6f] truncate">
                                                                 {formatSourceType(attempt.sourceType, attempt.bufferedTradeCount)}
+                                                                {attempt.usedRestFallback ? " · REST" : ""}
                                                             </div>
                                                         </div>
                                                         {side ? (
@@ -435,11 +438,18 @@ export default function CopyAttemptsPage() {
                                                                 </span>
                                                             </td>
                                                             <td className="py-4 px-3">
-                                                                <span
-                                                                    className={`rounded-full px-2 py-1 text-xs font-medium ${getSourceTypeColor(attempt.sourceType)}`}
-                                                                >
-                                                                    {formatSourceType(attempt.sourceType, attempt.bufferedTradeCount)}
-                                                                </span>
+                                                                <div className="flex items-center gap-2">
+                                                                    <span
+                                                                        className={`rounded-full px-2 py-1 text-xs font-medium ${getSourceTypeColor(attempt.sourceType)}`}
+                                                                    >
+                                                                        {formatSourceType(attempt.sourceType, attempt.bufferedTradeCount)}
+                                                                    </span>
+                                                                    {attempt.usedRestFallback ? (
+                                                                        <span className="rounded-full border border-[#27272A] bg-[#111827] px-2 py-1 text-[10px] font-semibold text-[#93c5fd]">
+                                                                            REST
+                                                                        </span>
+                                                                    ) : null}
+                                                                </div>
                                                             </td>
                                                             <td className="py-4 px-3 text-sm text-white">
                                                                 <div className="flex items-center gap-2">

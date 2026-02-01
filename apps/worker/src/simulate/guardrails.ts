@@ -154,17 +154,22 @@ export function computePriceBounds(
     midPriceMicros: number,
     guardrails: Guardrails
 ): { maxPriceMicros?: number; minPriceMicros?: number } {
+    // midPriceMicros can be missing (0) if price lookup fails; don't allow that
+    // to collapse bounds to near-zero values.
+    const effectiveMidPriceMicros =
+        midPriceMicros > 0 ? midPriceMicros : theirRefPriceMicros;
+
     if (side === TradeSide.BUY) {
         // For BUY: max price is the lesser of the two limits
         const maxVsTheirFill = theirRefPriceMicros + guardrails.maxWorseningVsTheirFillMicros;
-        const maxVsMid = midPriceMicros + guardrails.maxOverMidMicros;
+        const maxVsMid = effectiveMidPriceMicros + guardrails.maxOverMidMicros;
         return {
             maxPriceMicros: Math.min(maxVsTheirFill, maxVsMid),
         };
     } else {
         // For SELL: min price is the greater of the two limits
         const minVsTheirFill = theirRefPriceMicros - guardrails.maxWorseningVsTheirFillMicros;
-        const minVsMid = midPriceMicros - guardrails.maxOverMidMicros;
+        const minVsMid = effectiveMidPriceMicros - guardrails.maxOverMidMicros;
         return {
             minPriceMicros: Math.max(minVsTheirFill, minVsMid),
         };

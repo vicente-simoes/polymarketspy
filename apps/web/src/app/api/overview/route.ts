@@ -2,6 +2,78 @@ import { NextRequest, NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import prisma from "@/lib/prisma"
+import { getOrSetServerCache } from "@/lib/server-cache"
+import { withPgStatementTimeout } from "@/lib/pg-guardrails"
+
+type RangeKey = "1H" | "1D" | "1W" | "1M" | "ALL"
+
+const MICROS_PER_UNIT = BigInt(1_000_000)
+const DEFAULT_MARK_PRICE_MICROS = 500_000 // $0.50
+
+function parseRange(raw: string | null): RangeKey {
+    switch (raw) {
+        case "1H":
+        case "1D":
+        case "1W":
+        case "1M":
+        case "ALL":
+            return raw
+        default:
+            return "1M"
+    }
+}
+
+function getRangeStart(range: RangeKey): Date {
+    const startTime = new Date()
+    switch (range) {
+        case "1H":
+            startTime.setTime(startTime.getTime() - 60 * 60 * 1000)
+            return startTime
+        case "1D":
+            startTime.setTime(startTime.getTime() - 24 * 60 * 60 * 1000)
+            return startTime
+        case "1W":
+            startTime.setDate(startTime.getDate() - 7)
+            return startTime
+        case "ALL":
+            return new Date(0)
+        case "1M":
+        default:
+            startTime.setDate(startTime.getDate() - 30)
+            return startTime
+    }
+}
+
+function getGranularityForRange(range: RangeKey) {
+    switch (range) {
+        case "1H":
+            return "M1" as const
+        case "1D":
+            return "M20" as const
+        case "1W":
+            return "H2" as const
+        case "1M":
+            return "H12" as const
+        case "ALL":
+        default:
+            return "D1" as const
+    }
+}
+
+function parseInitialBankrollMicros(valueJson: unknown): bigint {
+    const raw = (valueJson as any)?.initialBankrollMicros
+    if (typeof raw === "number" && Number.isFinite(raw)) {
+        return BigInt(Math.trunc(raw))
+    }
+    if (typeof raw === "string" && /^[0-9]+$/.test(raw)) {
+        try {
+            return BigInt(raw)
+        } catch {
+            return BigInt(0)
+        }
+    }
+    return BigInt(0)
+}
 
 export async function GET(request: NextRequest) {
     const session = await getServerSession(authOptions)
@@ -11,222 +83,225 @@ export async function GET(request: NextRequest) {
 
     try {
         const searchParams = request.nextUrl.searchParams
-        const range = searchParams.get("range") || "1M"
+        const range = parseRange(searchParams.get("range"))
 
-        // Basic overview query
-        // 1. Get latest global portfolio snapshot
-        const latestSnapshot = await prisma.portfolioSnapshot.findFirst({
-            where: { portfolioScope: "EXEC_GLOBAL", followedUserId: null },
-            orderBy: { bucketTime: 'desc' }
-        })
+        const payload = await getOrSetServerCache(`overview:${range}`, 15_000, async () => {
+            return withPgStatementTimeout(4000, async (tx) => {
+                const [systemConfigRow, globalState, positions, lastBlock] = await Promise.all([
+                    tx.systemCheckpoint.findUnique({
+                        where: { key: "system:config" },
+                        select: { valueJson: true }
+                    }),
+                    tx.globalPortfolioState.findUnique({
+                        where: { id: "EXEC_GLOBAL" },
+                        select: { cashMicros: true, contributedCapitalMicros: true }
+                    }),
+                    tx.currentPosition.findMany({
+                        where: { shareMicros: { not: BigInt(0) } },
+                        select: { assetId: true, shareMicros: true, netCashFlowMicros: true }
+                    }),
+                    tx.systemCheckpoint.findUnique({
+                        where: { key: "alchemy:lastBlock" },
+                        select: { valueJson: true }
+                    })
+                ])
 
-        // 2. Get system status (checkpoints)
-        const lastBlock = await prisma.systemCheckpoint.findUnique({ where: { key: "alchemy:lastBlock" } })
-        const lastEvent = await prisma.tradeEvent.findFirst({ orderBy: { eventTime: 'desc' } })
+                const initialBankrollMicros = parseInitialBankrollMicros(systemConfigRow?.valueJson)
+                const cashMicros = initialBankrollMicros + (globalState?.cashMicros ?? BigInt(0))
+                const contributedCapitalMicros =
+                    initialBankrollMicros + (globalState?.contributedCapitalMicros ?? BigInt(0))
 
-        // 3. Count total trades today
-        const startOfDay = new Date()
-        startOfDay.setHours(0, 0, 0, 0)
-        const totalTradesToday = await prisma.tradeEvent.count({
-            where: { eventTime: { gte: startOfDay } }
-        })
+                const assetIds = positions.map((pos) => pos.assetId)
+                const [priceRows, tokenMetadata] = assetIds.length
+                    ? await Promise.all([
+                          tx.currentPrice.findMany({
+                              where: { assetId: { in: assetIds } },
+                              select: { assetId: true, midpointPriceMicros: true }
+                          }),
+                          tx.tokenMetadataCache.findMany({
+                              where: { tokenId: { in: assetIds } },
+                              select: { tokenId: true, marketTitle: true, outcomeLabel: true }
+                          })
+                      ])
+                    : [[], []]
 
-        // 4. Get equity curve based on range
-        let startTime = new Date()
-        switch (range) {
-            case "1H":
-                startTime.setTime(startTime.getTime() - 60 * 60 * 1000)
-                break
-            case "1D":
-                startTime.setTime(startTime.getTime() - 24 * 60 * 60 * 1000)
-                break
-            case "1W":
-                startTime.setDate(startTime.getDate() - 7)
-                break
-            case "ALL":
-                startTime = new Date(0) // Beginning of time
-                break
-            case "1M":
-            default:
-                startTime.setDate(startTime.getDate() - 30)
-                break
-        }
+                const priceByAsset = new Map(
+                    priceRows.map((row) => [row.assetId, row.midpointPriceMicros])
+                )
+                const tokenMetadataMap = new Map(tokenMetadata.map((meta) => [meta.tokenId, meta]))
 
-        const equityCurveSnapshots = await prisma.portfolioSnapshot.findMany({
-            where: {
-                portfolioScope: "EXEC_GLOBAL",
-                followedUserId: null,
-                bucketTime: { gte: startTime }
-            },
-            orderBy: { bucketTime: 'asc' }
-        })
+                let totalPositionValueMicros = BigInt(0)
+                let totalExposureMicros = BigInt(0)
 
-        const equityCurve = equityCurveSnapshots.map((s: any) => ({
-            date: s.bucketTime.toISOString(), // Full ISO string for frontend formatting
-            timestamp: s.bucketTime.getTime(),
-            value: Number(s.equityMicros) / 1_000_000
-        }))
+                const positionsWithMarks = positions.map((pos) => {
+                    const priceMicros = priceByAsset.get(pos.assetId) ?? DEFAULT_MARK_PRICE_MICROS
+                    const marketValueMicros =
+                        (pos.shareMicros * BigInt(priceMicros)) / MICROS_PER_UNIT
+                    const pnlMicros = marketValueMicros + pos.netCashFlowMicros
+                    const absValue =
+                        marketValueMicros < BigInt(0) ? -marketValueMicros : marketValueMicros
 
-        // Calculate Max Drawdown from the curve
-        let maxEquity = 0
-        let maxDrawdown = 0
-        for (const point of equityCurve) {
-            if (point.value > maxEquity) {
-                maxEquity = point.value
-            }
-            if (maxEquity > 0) {
-                const drawdown = (maxEquity - point.value) / maxEquity
-                if (drawdown > maxDrawdown) {
-                    maxDrawdown = drawdown
+                    totalPositionValueMicros += marketValueMicros
+                    totalExposureMicros += absValue
+
+                    return {
+                        assetId: pos.assetId,
+                        marketValueMicros,
+                        pnlMicros
+                    }
+                })
+
+                const equityMicros = cashMicros + totalPositionValueMicros
+                const pnlMicros = equityMicros - contributedCapitalMicros
+
+                const startTime = getRangeStart(range)
+                const granularity = getGranularityForRange(range)
+                const MAX_POINTS = 800
+                const points = await tx.equityPoint.findMany({
+                    where: {
+                        granularity,
+                        bucketTime: { gte: startTime }
+                    },
+                    orderBy: { bucketTime: "asc" }
+                })
+
+                const step = Math.max(1, Math.ceil(points.length / MAX_POINTS))
+                const sampledPoints =
+                    step === 1 ? points : points.filter((_, idx) => idx % step === 0)
+                const lastPoint = points.length > 0 ? points[points.length - 1] : null
+                if (
+                    lastPoint &&
+                    sampledPoints.length > 0 &&
+                    sampledPoints[sampledPoints.length - 1]?.bucketTime.getTime() !==
+                        lastPoint.bucketTime.getTime()
+                ) {
+                    sampledPoints.push(lastPoint)
                 }
-            }
-        }
 
-        // 5. Calculate Win Rate (Realized PnL > 0) from TradeEvents in last 30d (approx)
-        // Note: TradeEvent doesn't store PnL directly, LedgerEntry does.
-        // We need to look at CLOSED positions or Realized PnL entries in Ledger.
-        // For simplicity in v0: Count "profitable trades" if we can, or just use aggregate stats if easier.
-        // LedgerEntry scope=EXEC_GLOBAL and type=TRADE_CLOSE? System doesn't strictly have "TRADE_CLOSE".
-        // Alternative: Look at aggregated performance.
-        // 5. Win Rate - approximation difficult with current Ledger schema
-        // We will default to 0 for now until we have a better way to track "closed trade PnL"
-        const winRate = 0
-        const totalClosed = 0
+                const equityCurve = sampledPoints.map((p) => ({
+                    date: p.bucketTime.toISOString(),
+                    timestamp: p.bucketTime.getTime(),
+                    value: Number(p.equityMicros) / 1_000_000
+                }))
 
-        // 6. Top Positions (Unrealized PnL)
-        // a. Group by assetId to get open positions
-        const positionsRaw = await prisma.ledgerEntry.groupBy({
-            by: ["assetId"],
-            where: { portfolioScope: "EXEC_GLOBAL" },
-            _sum: {
-                shareDeltaMicros: true,
-                cashDeltaMicros: true
-            },
-            having: {
-                shareDeltaMicros: {
-                    _sum: { not: { equals: 0 } }
+                // Calculate Max Drawdown from the curve
+                let maxEquity = 0
+                let maxDrawdown = 0
+                for (const point of equityCurve) {
+                    if (point.value > maxEquity) {
+                        maxEquity = point.value
+                    }
+                    if (maxEquity > 0) {
+                        const drawdown = (maxEquity - point.value) / maxEquity
+                        if (drawdown > maxDrawdown) {
+                            maxDrawdown = drawdown
+                        }
+                    }
                 }
-            }
+
+                // Win rate/closed positions tracking not implemented yet.
+                const winRate = 0
+                const totalClosed = 0
+
+                // 6. Top Positions (Unrealized PnL)
+                const calculatedPositions = positionsWithMarks.map((p) => {
+                    const meta = tokenMetadataMap.get(p.assetId)
+                    return {
+                        assetId: p.assetId,
+                        marketTitle: meta?.marketTitle || "Unknown Market",
+                        outcomeLabel: meta?.outcomeLabel || "Unknown",
+                        pnl: Number(p.pnlMicros) / 1_000_000,
+                        marketValue: Number(p.marketValueMicros) / 1_000_000
+                    }
+                })
+
+                // Sort by Unrealized PnL descending
+                const topMarkets = calculatedPositions
+                    .sort((a, b) => b.pnl - a.pnl)
+                    .slice(0, 5)
+
+                // 7. Top Users (attributed open PnL)
+                const leaderRows = await tx.currentPositionByLeader.findMany({
+                    where: { shareMicros: { not: BigInt(0) } },
+                    select: {
+                        followedUserId: true,
+                        assetId: true,
+                        shareMicros: true,
+                        netCashFlowMicros: true
+                    }
+                })
+
+                const leaderAssetIds = Array.from(new Set(leaderRows.map((row) => row.assetId)))
+                const leaderPrices = leaderAssetIds.length
+                    ? await tx.currentPrice.findMany({
+                          where: { assetId: { in: leaderAssetIds } },
+                          select: { assetId: true, midpointPriceMicros: true }
+                      })
+                    : []
+                const leaderPriceByAsset = new Map(
+                    leaderPrices.map((row) => [row.assetId, row.midpointPriceMicros])
+                )
+
+                const pnlMicrosByUser = new Map<string, bigint>()
+                const positionsByUser = new Map<string, number>()
+                for (const row of leaderRows) {
+                    const priceMicros =
+                        leaderPriceByAsset.get(row.assetId) ?? DEFAULT_MARK_PRICE_MICROS
+                    const valueMicros =
+                        (row.shareMicros * BigInt(priceMicros)) / MICROS_PER_UNIT
+                    const pnlMicros = valueMicros + row.netCashFlowMicros
+
+                    pnlMicrosByUser.set(
+                        row.followedUserId,
+                        (pnlMicrosByUser.get(row.followedUserId) ?? BigInt(0)) + pnlMicros
+                    )
+                    positionsByUser.set(
+                        row.followedUserId,
+                        (positionsByUser.get(row.followedUserId) ?? 0) + 1
+                    )
+                }
+
+                const leaderIds = Array.from(pnlMicrosByUser.keys())
+                const leaders = leaderIds.length
+                    ? await tx.followedUser.findMany({
+                          where: { id: { in: leaderIds } },
+                          select: { id: true, label: true }
+                      })
+                    : []
+                const labelById = new Map(leaders.map((u) => [u.id, u.label]))
+
+                const validTopUsers = Array.from(pnlMicrosByUser.entries())
+                    .map(([userId, pnlMicros]) => ({
+                        label: labelById.get(userId) || "Unknown User",
+                        pnl: Number(pnlMicros) / 1_000_000,
+                        count: positionsByUser.get(userId) ?? 0
+                    }))
+                    .sort((a, b) => b.pnl - a.pnl)
+                    .slice(0, 5)
+
+                return {
+                    equity: Number(equityMicros) / 1_000_000,
+                    pnl: Number(pnlMicros) / 1_000_000,
+                    exposure: Number(totalExposureMicros) / 1_000_000,
+                    tradesToday: 0,
+                    equityCurve,
+                    analytics: {
+                        winRate,
+                        totalClosedPositions: totalClosed,
+                        maxDrawdown: maxDrawdown * 100, // percentage
+                        topMarkets,
+                        topUsers: validTopUsers
+                    },
+                    system: {
+                        lastBlock: lastBlock?.valueJson ?? null,
+                        lastEventTime: null,
+                        status: "healthy"
+                    }
+                }
+            })
         })
 
-        const assetIds = positionsRaw
-            .map((p) => p.assetId)
-            .filter((id): id is string => id !== null)
-
-        // b. Fetch prices and metadata
-        const priceSnapshots = assetIds.length
-            ? await prisma.marketPriceSnapshot.findMany({
-                where: { assetId: { in: assetIds } },
-                orderBy: { bucketTime: "desc" },
-                distinct: ["assetId"]
-            })
-            : []
-        const priceMap = new Map(
-            priceSnapshots.map((snap) => [snap.assetId, snap.midpointPriceMicros])
-        )
-
-        const tokenMetadata = assetIds.length
-            ? await prisma.tokenMetadataCache.findMany({
-                where: { tokenId: { in: assetIds } },
-                select: {
-                    tokenId: true,
-                    marketTitle: true,
-                    outcomeLabel: true
-                }
-            })
-            : []
-        const tokenMetadataMap = new Map(
-            tokenMetadata.map((meta) => [meta.tokenId, meta])
-        )
-
-        // c. Calculate Unrealized PnL and sort
-        const calculatedPositions = positionsRaw.map((p) => {
-            const assetId = p.assetId
-            if (!assetId) return null
-
-            const shares = Number(p._sum.shareDeltaMicros) / 1_000_000
-            const netCashFlow = Number(p._sum.cashDeltaMicros) / 1_000_000 // usually negative if buying
-            const priceMicros = priceMap.get(assetId) || 0
-            const price = priceMicros / 1_000_000
-
-            // Unrealized PnL = (Shares * Price) + NetCashFlow
-            // Example: Buy $100 shares. CashFlow = -100. Value = 110. PnL = 110 + (-100) = 10.
-            const marketValue = shares * price
-            const unrealizedPnl = marketValue + netCashFlow
-
-            const meta = tokenMetadataMap.get(assetId)
-
-            return {
-                assetId,
-                marketTitle: meta?.marketTitle || "Unknown Market",
-                outcomeLabel: meta?.outcomeLabel || "Unknown",
-                pnl: unrealizedPnl,
-                marketValue
-            }
-        }).filter((p): p is NonNullable<typeof p> => p !== null)
-
-        // Sort by Unrealized PnL descending
-        const topMarkets = calculatedPositions
-            .sort((a, b) => b.pnl - a.pnl)
-            .slice(0, 5)
-
-        // 7. Top Users (by Realized PnL)
-        // Group LedgerEntry by followedUserId where scope=EXEC_USER
-        const userPerformers = await prisma.ledgerEntry.groupBy({
-            by: ['followedUserId'],
-            where: {
-                portfolioScope: "EXEC_USER",
-                followedUserId: { not: null }
-            },
-            _sum: { cashDeltaMicros: true },
-            orderBy: { _sum: { cashDeltaMicros: 'desc' } },
-            take: 5
-        })
-
-        // Enhance with user labels and trade counts
-        const topUsers = await Promise.all(userPerformers.map(async (u) => {
-            if (!u.followedUserId) return null
-
-            const user = await prisma.followedUser.findUnique({
-                where: { id: u.followedUserId },
-                select: { label: true }
-            })
-
-            const tradeCount = await prisma.copyAttempt.count({
-                where: {
-                    followedUserId: u.followedUserId,
-                    decision: "EXECUTE"
-                }
-            })
-
-            return {
-                label: user?.label || "Unknown User",
-                pnl: Number(u._sum.cashDeltaMicros) / 1_000_000,
-                count: tradeCount
-            }
-        }))
-
-        const validTopUsers = topUsers.filter(u => u !== null)
-
-        return NextResponse.json({
-            equity: latestSnapshot ? Number(latestSnapshot.equityMicros) / 1_000_000 : 0,
-            pnl: latestSnapshot ? Number(latestSnapshot.realizedPnlMicros + latestSnapshot.unrealizedPnlMicros) / 1_000_000 : 0,
-            exposure: latestSnapshot ? Number(latestSnapshot.exposureMicros) / 1_000_000 : 0,
-            tradesToday: totalTradesToday,
-            equityCurve,
-            analytics: {
-                winRate,
-                totalClosedPositions: totalClosed,
-                maxDrawdown: maxDrawdown * 100, // percentage
-                topMarkets,
-                topUsers: validTopUsers
-            },
-            system: {
-                lastBlock: lastBlock?.valueJson,
-                lastEventTime: lastEvent?.eventTime,
-                status: "healthy"
-            }
-        })
+        return NextResponse.json(payload)
     } catch (error) {
         console.error("Failed to fetch overview:", error)
         return NextResponse.json({ error: "Internal Server Error" }, { status: 500 })

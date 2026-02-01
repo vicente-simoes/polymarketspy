@@ -10,10 +10,13 @@
  * 6. Write CopyAttempt and ledger entries
  */
 
-import { TradeSide, PortfolioScope, CopyDecision } from "@prisma/client";
-import { ReasonCodes, SizingMode, BudgetEnforcement, type ReasonCode } from "@copybot/shared";
+import { TradeSide, PortfolioScope, CopyDecision, BookSource } from "@prisma/client";
+import { ReasonCodes, type ReasonCode } from "@copybot/shared";
 import { prisma } from "../db/prisma.js";
+import { createLedgerEntryIfNotExistsAndUpdateCaches } from "../db/ledger.js";
 import { createChildLogger } from "../log/logger.js";
+import { env } from "../config/env.js";
+import { CLOB_PRIORITY_EXECUTOR } from "../http/limiters.js";
 import { getSystemConfig } from "../config/system.js";
 import { getGlobalConfig, getUserConfig } from "./config.js";
 import {
@@ -27,7 +30,7 @@ import {
     type SimulationResult,
 } from "./book.js";
 import { getBook } from "./bookService.js";
-import type { NormalizedBook } from "./bookUtils.js";
+import { normalizeOrderBook, type NormalizedBook } from "./bookUtils.js";
 import {
     checkSpreadFilter,
     checkMaxBuyCostPerShare,
@@ -40,6 +43,7 @@ import {
     type PortfolioState,
 } from "./guardrails.js";
 import type { TradeEventGroup, ActivityEventGroup, EventGroup, CopySourceType } from "./types.js";
+import { fetchOrderBook } from "../poly/index.js";
 
 const logger = createChildLogger({ module: "executor" });
 
@@ -48,6 +52,13 @@ const marketIdCache = new Map<string, { marketId: string | null; expiresAtMs: nu
 
 function isNumericMarketId(value: string | null): value is string {
     return typeof value === "string" && /^\d+$/.test(value);
+}
+
+function extractWindowStartMsFromGroupKey(groupKey: string): number | null {
+    const match = groupKey.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
+    if (!match) return null;
+    const parsed = Date.parse(match[0]);
+    return Number.isNaN(parsed) ? null : parsed;
 }
 
 async function getMarketIdForToken(tokenId: string): Promise<string | null> {
@@ -137,10 +148,8 @@ async function getPortfolioState(
         ),
     ];
     const priceSnapshots = assetIds.length
-        ? await prisma.marketPriceSnapshot.findMany({
+        ? await prisma.currentPrice.findMany({
               where: { assetId: { in: assetIds } },
-              orderBy: { bucketTime: "desc" },
-              distinct: ["assetId"],
               select: { assetId: true, midpointPriceMicros: true },
           })
         : [];
@@ -220,31 +229,6 @@ async function getPortfolioState(
 }
 
 /**
- * Get leader's exposure from latest SHADOW_USER snapshot.
- * Used for budgeted dynamic sizing to compute r_u = budget / leaderExposure.
- */
-async function getLeaderExposureMicros(followedUserId: string): Promise<bigint> {
-    const snapshot = await prisma.portfolioSnapshot.findFirst({
-        where: {
-            portfolioScope: PortfolioScope.SHADOW_USER,
-            followedUserId,
-        },
-        orderBy: { bucketTime: "desc" },
-        select: { exposureMicros: true },
-    });
-
-    if (!snapshot) {
-        logger.warn(
-            { followedUserId },
-            "No SHADOW_USER snapshot found for leader exposure, using 0"
-        );
-        return BigInt(0);
-    }
-
-    return snapshot.exposureMicros;
-}
-
-/**
  * Options for copy attempt execution.
  */
 export interface CopyAttemptOptions {
@@ -264,6 +248,7 @@ export async function executeTradeGroup(
     // Use rawTokenId (on-chain) if available, otherwise assetId (API)
     const effectiveTokenId = group.rawTokenId ?? group.assetId;
     let resolvedMarketId = isNumericMarketId(group.marketId) ? group.marketId : null;
+    const windowStartMsFromGroupKey = extractWindowStartMsFromGroupKey(group.groupKey);
 
     const log = logger.child({
         groupKey: group.groupKey,
@@ -283,11 +268,6 @@ export async function executeTradeGroup(
 
     const sourceType = options.sourceType ?? "AGGREGATOR";
     const isBufferSource = sourceType === "BUFFER";
-
-    // Check if budgeted dynamic is active for this user
-    const useBudgetedDynamic =
-        sizing.budgetedDynamicEnabled &&
-        sizing.sizingMode === SizingMode.BUDGETED_DYNAMIC;
 
     // ─── MIN LEADER TRADE NOTIONAL FILTER ──────────────────────────────────
     // Skip small leader trades (applies only to non-buffer trades)
@@ -370,40 +350,11 @@ export async function executeTradeGroup(
     // For non-buffer: compute raw target based on sizing mode (fixed or dynamic)
 
     let rawTargetMicros: bigint;
-    let effectiveRateBps: number | undefined;
-    let clampedToRMin = false;
-    let clampedToRMax = false;
-    let leaderExposureMicros: bigint | undefined;
 
     if (isBufferSource) {
         // Buffer trades: notional is already scaled, use directly
         rawTargetMicros = group.totalNotionalMicros;
         log.debug({ rawTargetMicros: rawTargetMicros.toString() }, "Using buffer notional as raw target");
-    } else if (useBudgetedDynamic && followedUserId) {
-        // Budgeted dynamic mode: compute rate from budget / leader exposure
-        leaderExposureMicros = await getLeaderExposureMicros(followedUserId);
-        const rawResult = computeRawTargetNotional(
-            group.totalNotionalMicros,
-            sizing,
-            leaderExposureMicros
-        );
-        rawTargetMicros = rawResult.rawTargetMicros;
-        effectiveRateBps = rawResult.effectiveRateBps;
-        clampedToRMin = rawResult.clampedToRMin ?? false;
-        clampedToRMax = rawResult.clampedToRMax ?? false;
-
-        log.debug(
-            {
-                theirNotional: group.totalNotionalMicros.toString(),
-                budgetUsdcMicros: sizing.budgetUsdcMicros,
-                leaderExposureMicros: leaderExposureMicros.toString(),
-                effectiveRateBps,
-                rawTargetMicros: rawTargetMicros.toString(),
-                clampedToRMin,
-                clampedToRMax,
-            },
-            "Computed budgeted dynamic raw target"
-        );
     } else {
         // Fixed-rate mode: use standard formula
         const rawResult = computeRawTargetNotional(group.totalNotionalMicros, sizing);
@@ -425,166 +376,6 @@ export async function executeTradeGroup(
         sizing
     );
 
-    // ─── HARD BUDGET ENFORCEMENT ───────────────────────────────────────────
-    // If budgeted dynamic + HARD enforcement + increasing exposure:
-    // Cap target to budget headroom, or skip if headroom exhausted
-    let budgetHeadroomMicros: bigint | undefined;
-    let budgetCapped = false;
-
-    if (
-        useBudgetedDynamic &&
-        followedUserId &&
-        sizing.budgetEnforcement === BudgetEnforcement.HARD
-    ) {
-        // Check if this trade is reducing exposure (allows bypass)
-        const isReducing = effectiveTokenId
-            ? await isReducingExposure(
-                  portfolioScope,
-                  followedUserId,
-                  effectiveTokenId,
-                  group.side
-              )
-            : false;
-
-        if (!isReducing) {
-            // Get current exposure attributed to this leader
-            const currentExposureMicros =
-                portfolioState.exposureByUser.get(followedUserId) ?? BigInt(0);
-            const budgetMicros = BigInt(sizing.budgetUsdcMicros);
-            budgetHeadroomMicros = budgetMicros - currentExposureMicros;
-
-            log.debug(
-                {
-                    budgetMicros: budgetMicros.toString(),
-                    currentExposureMicros: currentExposureMicros.toString(),
-                    budgetHeadroomMicros: budgetHeadroomMicros.toString(),
-                    targetNotionalMicros: targetResult.targetNotionalMicros.toString(),
-                },
-                "Checking HARD budget enforcement"
-            );
-
-            if (budgetHeadroomMicros <= BigInt(0)) {
-                // No headroom: skip trade
-                log.info(
-                    {
-                        budgetMicros: budgetMicros.toString(),
-                        currentExposureMicros: currentExposureMicros.toString(),
-                    },
-                    "Budget exhausted, skipping trade"
-                );
-
-                // Write CopyAttempt row
-                const copyAttemptData = {
-                    portfolioScope,
-                    followedUserId,
-                    groupKey: group.groupKey,
-                    decision: CopyDecision.SKIP,
-                    reasonCodes: [ReasonCodes.BUDGET_HARD_CAP_EXCEEDED],
-                    sourceType,
-                    bufferedTradeCount: options.bufferedTradeCount ?? group.tradeEventIds.length,
-                    targetNotionalMicros: targetResult.targetNotionalMicros,
-                    filledNotionalMicros: BigInt(0),
-                    vwapPriceMicros: null,
-                    filledRatioBps: 0,
-                    theirReferencePriceMicros: group.vwapPriceMicros,
-                    midPriceMicrosAtDecision: 0,
-                };
-
-                await prisma.copyAttempt.upsert({
-                    where: {
-                        portfolioScope_followedUserId_groupKey: {
-                            portfolioScope,
-                            followedUserId,
-                            groupKey: group.groupKey,
-                        },
-                    },
-                    create: copyAttemptData,
-                    update: { decision: CopyDecision.SKIP, reasonCodes: [ReasonCodes.BUDGET_HARD_CAP_EXCEEDED] },
-                });
-
-                return {
-                    decision: CopyDecision.SKIP,
-                    reasonCodes: [ReasonCodes.BUDGET_HARD_CAP_EXCEEDED],
-                    targetNotionalMicros: targetResult.targetNotionalMicros,
-                    filledNotionalMicros: BigInt(0),
-                    filledShareMicros: BigInt(0),
-                    vwapPriceMicros: 0,
-                    filledRatioBps: 0,
-                };
-            }
-
-            // Cap to headroom if target exceeds it
-            if (targetResult.targetNotionalMicros > budgetHeadroomMicros) {
-                const cappedTarget = budgetHeadroomMicros;
-
-                // Check if capped target is below minimum
-                if (cappedTarget < BigInt(sizing.minTradeNotionalMicros)) {
-                    log.info(
-                        {
-                            cappedTarget: cappedTarget.toString(),
-                            minTradeNotional: sizing.minTradeNotionalMicros,
-                        },
-                        "Budget-capped target below min trade notional, skipping"
-                    );
-
-                    const copyAttemptData = {
-                        portfolioScope,
-                        followedUserId,
-                        groupKey: group.groupKey,
-                        decision: CopyDecision.SKIP,
-                        reasonCodes: [ReasonCodes.BUDGET_HARD_CAP_EXCEEDED],
-                        sourceType,
-                        bufferedTradeCount: options.bufferedTradeCount ?? group.tradeEventIds.length,
-                        targetNotionalMicros: targetResult.targetNotionalMicros,
-                        filledNotionalMicros: BigInt(0),
-                        vwapPriceMicros: null,
-                        filledRatioBps: 0,
-                        theirReferencePriceMicros: group.vwapPriceMicros,
-                        midPriceMicrosAtDecision: 0,
-                    };
-
-                    await prisma.copyAttempt.upsert({
-                        where: {
-                            portfolioScope_followedUserId_groupKey: {
-                                portfolioScope,
-                                followedUserId,
-                                groupKey: group.groupKey,
-                            },
-                        },
-                        create: copyAttemptData,
-                        update: { decision: CopyDecision.SKIP, reasonCodes: [ReasonCodes.BUDGET_HARD_CAP_EXCEEDED] },
-                    });
-
-                    return {
-                        decision: CopyDecision.SKIP,
-                        reasonCodes: [ReasonCodes.BUDGET_HARD_CAP_EXCEEDED],
-                        targetNotionalMicros: targetResult.targetNotionalMicros,
-                        filledNotionalMicros: BigInt(0),
-                        filledShareMicros: BigInt(0),
-                        vwapPriceMicros: 0,
-                        filledRatioBps: 0,
-                    };
-                }
-
-                // Apply budget cap
-                log.info(
-                    {
-                        originalTarget: targetResult.targetNotionalMicros.toString(),
-                        cappedTarget: cappedTarget.toString(),
-                        budgetHeadroom: budgetHeadroomMicros.toString(),
-                    },
-                    "Capping target to budget headroom"
-                );
-
-                targetResult = {
-                    ...targetResult,
-                    targetNotionalMicros: cappedTarget,
-                };
-                budgetCapped = true;
-            }
-        }
-    }
-
     // 4. Check if we have a token ID
     if (!effectiveTokenId) {
         log.error("No token ID available for book simulation");
@@ -602,10 +393,13 @@ export async function executeTradeGroup(
     // 5. Fetch order book FIRST (before computing price bounds)
     // Uses cache-first approach: WS cache if available, REST fallback
     log.debug("Fetching order book (cache-first)");
-    const bookResult = await getBook(effectiveTokenId, {
+    const bookFetchStartedAtMs = Date.now();
+    let bookResult = await getBook(effectiveTokenId, {
         waitMs: 500,
         freshnessMs: 2000,
     });
+    let bookFetchElapsedMs = Date.now() - bookFetchStartedAtMs;
+    let usedRestFallback = false;
 
     if (!bookResult.book) {
         log.warn("Order book not available (market may be resolved)");
@@ -620,7 +414,71 @@ export async function executeTradeGroup(
         };
     }
 
-    const book: NormalizedBook = bookResult.book;
+    let book: NormalizedBook = bookResult.book;
+
+    // Safety: WS cache can get into an invalid/crossed state (bestBid > bestAsk),
+    // typically due to missing deltas during reconnects. Never simulate/execute
+    // against a crossed book; instead, fall back to REST (source of truth).
+    if (bookResult.source === "WS" && book.spreadMicros < 0) {
+        const bookAgeMs = book.updatedAt > 0 ? Date.now() - book.updatedAt : null;
+        log.warn(
+            {
+                bestBidMicros: book.bestBidMicros,
+                bestAskMicros: book.bestAskMicros,
+                spreadMicros: book.spreadMicros,
+                bookAgeMs,
+                bookStale: bookResult.stale,
+            },
+            "Crossed/invalid WS book detected; falling back to REST"
+        );
+
+        const restFetchStartedAtMs = Date.now();
+        const rawRestBook = await fetchOrderBook(effectiveTokenId, { priority: CLOB_PRIORITY_EXECUTOR });
+        const restFetchElapsedMs = Date.now() - restFetchStartedAtMs;
+        bookFetchElapsedMs += restFetchElapsedMs;
+
+        if (!rawRestBook) {
+            log.warn(
+                { restFetchElapsedMs },
+                "REST order book unavailable after crossed WS book"
+            );
+            return {
+                decision: CopyDecision.SKIP,
+                reasonCodes: [ReasonCodes.NO_LIQUIDITY_WITHIN_BOUNDS],
+                targetNotionalMicros: targetResult.targetNotionalMicros,
+                filledNotionalMicros: BigInt(0),
+                filledShareMicros: BigInt(0),
+                vwapPriceMicros: 0,
+                filledRatioBps: 0,
+            };
+        }
+
+        book = normalizeOrderBook(rawRestBook, "REST");
+        if (book.spreadMicros < 0) {
+            log.error(
+                {
+                    bestBidMicros: book.bestBidMicros,
+                    bestAskMicros: book.bestAskMicros,
+                    spreadMicros: book.spreadMicros,
+                },
+                "REST order book is crossed; refusing to simulate/execute"
+            );
+            return {
+                decision: CopyDecision.SKIP,
+                reasonCodes: [ReasonCodes.NO_LIQUIDITY_WITHIN_BOUNDS],
+                targetNotionalMicros: targetResult.targetNotionalMicros,
+                filledNotionalMicros: BigInt(0),
+                filledShareMicros: BigInt(0),
+                vwapPriceMicros: 0,
+                filledRatioBps: 0,
+            };
+        }
+        bookResult = { book, source: "REST", stale: false };
+        usedRestFallback = true;
+    } else if (bookResult.source === "REST" && env.CLOB_BOOK_WS_ENABLED) {
+        // WS enabled but we had to use REST (cache miss/placeholder).
+        usedRestFallback = true;
+    }
 
     // 6. Extract metrics from the normalized book
     const { midPriceMicros, bestBidMicros, bestAskMicros, spreadMicros } = book;
@@ -667,20 +525,6 @@ export async function executeTradeGroup(
             clampedToMax: targetResult.clampedToMax,
             clampedByBankroll: targetResult.clampedByBankroll,
 
-            // Budgeted dynamic (when applicable)
-            sizingMode: sizing.sizingMode,
-            budgetedDynamicEnabled: sizing.budgetedDynamicEnabled,
-            budgetEnforcement: sizing.budgetEnforcement,
-            ...(useBudgetedDynamic && {
-                budgetUsdcMicros: sizing.budgetUsdcMicros,
-                leaderExposureMicros: leaderExposureMicros?.toString(),
-                effectiveRateBps,
-                clampedToRMin,
-                clampedToRMax,
-                budgetHeadroomMicros: budgetHeadroomMicros?.toString(),
-                budgetCapped,
-            }),
-
             // Simulation results
             availableNotionalMicros: simulation.availableNotionalMicros.toString(),
             filledNotionalMicros: simulation.filledNotionalMicros.toString(),
@@ -689,6 +533,8 @@ export async function executeTradeGroup(
             simulationSuccess: simulation.success,
             bookSource: bookResult.source,
             bookStale: bookResult.stale,
+            bookFetchElapsedMs,
+            usedRestFallback,
 
             // Source type
             sourceType,
@@ -790,6 +636,8 @@ export async function executeTradeGroup(
     // 10. Determine decision
     const uniqueReasons = [...new Set(reasonCodes)];
     const decision = uniqueReasons.length === 0 ? CopyDecision.EXECUTE : CopyDecision.SKIP;
+    const lagSinceWindowStartMs =
+        windowStartMsFromGroupKey !== null ? Date.now() - windowStartMsFromGroupKey : null;
 
     log.info(
         {
@@ -798,6 +646,8 @@ export async function executeTradeGroup(
             targetNotional: targetResult.targetNotionalMicros.toString(),
             filledNotional: simulation.filledNotionalMicros.toString(),
             filledRatio: simulation.filledRatioBps,
+            windowStartMs: windowStartMsFromGroupKey,
+            lagSinceWindowStartMs,
         },
         "Copy attempt decision"
     );
@@ -815,6 +665,8 @@ export async function executeTradeGroup(
         reasonCodes: uniqueReasons,
         sourceType,
         bufferedTradeCount,
+        bookSource: bookResult.source ? (bookResult.source === "WS" ? BookSource.WS : BookSource.REST) : null,
+        usedRestFallback,
         targetNotionalMicros: targetResult.targetNotionalMicros,
         filledNotionalMicros: decision === CopyDecision.EXECUTE ? simulation.filledNotionalMicros : BigInt(0),
         vwapPriceMicros: decision === CopyDecision.EXECUTE ? simulation.vwapPriceMicros : null,
@@ -838,6 +690,8 @@ export async function executeTradeGroup(
             update: {
                 decision,
                 reasonCodes: uniqueReasons,
+                bookSource: bookResult.source ? (bookResult.source === "WS" ? BookSource.WS : BookSource.REST) : null,
+                usedRestFallback,
                 filledNotionalMicros: decision === CopyDecision.EXECUTE ? simulation.filledNotionalMicros : BigInt(0),
                 vwapPriceMicros: decision === CopyDecision.EXECUTE ? simulation.vwapPriceMicros : null,
                 filledRatioBps: decision === CopyDecision.EXECUTE ? simulation.filledRatioBps : 0,
@@ -859,6 +713,8 @@ export async function executeTradeGroup(
                 data: {
                     decision,
                     reasonCodes: uniqueReasons,
+                    bookSource: bookResult.source ? (bookResult.source === "WS" ? BookSource.WS : BookSource.REST) : null,
+                    usedRestFallback,
                     filledNotionalMicros: decision === CopyDecision.EXECUTE ? simulation.filledNotionalMicros : BigInt(0),
                     vwapPriceMicros: decision === CopyDecision.EXECUTE ? simulation.vwapPriceMicros : null,
                     filledRatioBps: decision === CopyDecision.EXECUTE ? simulation.filledRatioBps : 0,
@@ -894,28 +750,22 @@ export async function executeTradeGroup(
             ? -simulation.filledNotionalMicros
             : simulation.filledNotionalMicros;
 
-        await prisma.ledgerEntry.upsert({
-            where: {
-                portfolioScope_refId_entryType: {
-                    portfolioScope,
-                    refId: `copy:${copyAttempt.id}`,
-                    entryType: "TRADE_FILL",
-                },
-            },
-            create: {
+        const marketId = effectiveTokenId
+            ? resolvedMarketId ?? (await getMarketIdForToken(effectiveTokenId))
+            : resolvedMarketId;
+
+        await prisma.$transaction(async (tx) => {
+            await createLedgerEntryIfNotExistsAndUpdateCaches(tx, {
                 portfolioScope,
                 followedUserId,
-                marketId: effectiveTokenId
-                    ? resolvedMarketId ?? (await getMarketIdForToken(effectiveTokenId))
-                    : resolvedMarketId,
+                marketId,
                 assetId: effectiveTokenId, // Use rawTokenId for WS-first trades
                 entryType: "TRADE_FILL",
                 shareDeltaMicros,
                 cashDeltaMicros,
                 priceMicros: simulation.vwapPriceMicros,
                 refId: `copy:${copyAttempt.id}`,
-            },
-            update: {},
+            });
         });
 
         log.debug("Wrote ExecutableFill and LedgerEntry rows");

@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import prisma from "@/lib/prisma"
+import { getOrSetServerCache } from "@/lib/server-cache"
+import { withPgStatementTimeout } from "@/lib/pg-guardrails"
 
 type PnlRange = "1H" | "1D" | "1W" | "1M"
 
@@ -19,6 +21,34 @@ const parseRange = (raw: string | null): PnlRange => {
     }
 }
 
+const granularityForRange = (range: PnlRange) => {
+    switch (range) {
+        case "1H":
+            return "M1" as const
+        case "1D":
+            return "M20" as const
+        case "1W":
+            return "H2" as const
+        case "1M":
+        default:
+            return "H12" as const
+    }
+}
+
+const rangeMs = (range: PnlRange) => {
+    switch (range) {
+        case "1H":
+            return 60 * 60 * 1000
+        case "1D":
+            return 24 * 60 * 60 * 1000
+        case "1W":
+            return 7 * 24 * 60 * 60 * 1000
+        case "1M":
+        default:
+            return 30 * 24 * 60 * 60 * 1000
+    }
+}
+
 export async function GET(request: NextRequest) {
     const session = await getServerSession(authOptions)
     if (!session) {
@@ -27,74 +57,53 @@ export async function GET(request: NextRequest) {
 
     try {
         const range = parseRange(request.nextUrl.searchParams.get("range"))
+        const payload = await getOrSetServerCache(`portfolio:global:pnl:${range}`, 30_000, async () => {
+            return withPgStatementTimeout(4000, async (tx) => {
+                const granularity = granularityForRange(range)
+                const nowMs = Date.now()
+                const startTime = new Date(nowMs - rangeMs(range))
 
-        const latestSnapshot = await prisma.portfolioSnapshot.findFirst({
-            where: { portfolioScope: "EXEC_GLOBAL", followedUserId: null },
-            orderBy: { bucketTime: "desc" }
+                const points = await tx.equityPoint.findMany({
+                    where: {
+                        granularity,
+                        bucketTime: { gte: startTime, lte: new Date(nowMs) }
+                    },
+                    orderBy: { bucketTime: "asc" }
+                })
+
+                if (points.length === 0) {
+                    return {
+                        range,
+                        pnlCurve: [] as Array<{ date: string; timestamp: number; value: number }>
+                    }
+                }
+
+                const baselinePnl = Number(points[0].pnlMicros) / 1_000_000
+
+                const step = Math.max(1, Math.ceil(points.length / MAX_POINTS))
+                const sampled = step === 1 ? points : points.filter((_, idx) => idx % step === 0)
+                const lastPoint = points[points.length - 1]
+
+                if (
+                    sampled[sampled.length - 1]?.bucketTime.getTime() !==
+                    lastPoint.bucketTime.getTime()
+                ) {
+                    sampled.push(lastPoint)
+                }
+
+                const pnlCurve = sampled.map((p) => ({
+                    date: p.bucketTime.toISOString(),
+                    timestamp: p.bucketTime.getTime(),
+                    value: Number(p.pnlMicros) / 1_000_000 - baselinePnl
+                }))
+
+                return { range, pnlCurve }
+            })
         })
 
-        if (!latestSnapshot) {
-            return NextResponse.json({ range, pnlCurve: [] })
-        }
-
-        const endTime = latestSnapshot.bucketTime
-        const startTime = new Date(endTime)
-
-        switch (range) {
-            case "1H":
-                startTime.setTime(startTime.getTime() - 60 * 60 * 1000)
-                break
-            case "1D":
-                startTime.setTime(startTime.getTime() - 24 * 60 * 60 * 1000)
-                break
-            case "1W":
-                startTime.setDate(startTime.getDate() - 7)
-                break
-            case "1M":
-            default:
-                startTime.setDate(startTime.getDate() - 30)
-                break
-        }
-
-        const snapshots = await prisma.portfolioSnapshot.findMany({
-            where: {
-                portfolioScope: "EXEC_GLOBAL",
-                followedUserId: null,
-                bucketTime: { gte: startTime, lte: endTime }
-            },
-            orderBy: { bucketTime: "asc" }
-        })
-
-        if (snapshots.length === 0) {
-            return NextResponse.json({ range, pnlCurve: [] })
-        }
-
-        const baselinePnl =
-            Number(snapshots[0].realizedPnlMicros + snapshots[0].unrealizedPnlMicros) /
-            1_000_000
-
-        const step = Math.max(1, Math.ceil(snapshots.length / MAX_POINTS))
-        const sampled = step === 1 ? snapshots : snapshots.filter((_, idx) => idx % step === 0)
-        const lastSnapshot = snapshots[snapshots.length - 1]
-
-        if (sampled[sampled.length - 1]?.id !== lastSnapshot.id) {
-            sampled.push(lastSnapshot)
-        }
-
-        const pnlCurve = sampled.map((s) => {
-            const pnl =
-                Number(s.realizedPnlMicros + s.unrealizedPnlMicros) / 1_000_000 - baselinePnl
-            return {
-                date: s.bucketTime.toISOString(),
-                timestamp: s.bucketTime.getTime(),
-                value: pnl
-            }
-        })
-
-        return NextResponse.json({ range, pnlCurve })
+        return NextResponse.json(payload)
     } catch (error) {
         console.error("Failed to fetch global pnl curve:", error)
         return NextResponse.json({ error: "Internal Server Error" }, { status: 500 })
     }
 }
-

@@ -97,7 +97,7 @@ export default function PositionDetailPage() {
         error: portfolioError,
         isLoading: portfolioLoading
     } = useSWR<GlobalPortfolioResponse>("/api/portfolio/global", fetcher, {
-        refreshInterval: 10000
+        refreshInterval: 30000
     })
 
     const position = useMemo(() => {

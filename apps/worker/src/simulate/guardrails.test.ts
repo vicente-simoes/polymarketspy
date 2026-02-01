@@ -15,7 +15,7 @@ describe("computePriceBounds", () => {
         it("should compute correct max price with realistic mid (the bug fix)", () => {
             // This is the test case from the fix plan:
             // Given theirRef=600000 and mid=600000, max BUY price should be
-            // min(610000, 615000) = 610000 (with current defaults)
+            // min(620000, 615000) = 615000 (with current defaults)
             const bounds = computePriceBounds(
                 TradeSide.BUY,
                 600_000, // theirRefPriceMicros = $0.60
@@ -23,16 +23,16 @@ describe("computePriceBounds", () => {
                 DEFAULT_GUARDRAILS
             );
 
-            // maxVsTheirFill = 600000 + 10000 = 610000
+            // maxVsTheirFill = 600000 + 20000 = 620000
             // maxVsMid = 600000 + 15000 = 615000
-            // maxPriceMicros = min(610000, 615000) = 610000
-            expect(bounds.maxPriceMicros).toBe(610_000);
+            // maxPriceMicros = min(620000, 615000) = 615000
+            expect(bounds.maxPriceMicros).toBe(615_000);
             expect(bounds.minPriceMicros).toBeUndefined();
         });
 
         it("should compute impossibly low max price when mid=0 (the bug)", () => {
-            // This demonstrates the bug: when mid=0, max price becomes ~15000
-            // which is why all BUYs were being skipped
+            // midPriceMicros can be missing (0) if price lookup fails.
+            // In that case we fall back to theirRef so the bound is still sane.
             const bounds = computePriceBounds(
                 TradeSide.BUY,
                 600_000, // theirRefPriceMicros = $0.60
@@ -40,10 +40,11 @@ describe("computePriceBounds", () => {
                 DEFAULT_GUARDRAILS
             );
 
-            // maxVsTheirFill = 600000 + 10000 = 610000
-            // maxVsMid = 0 + 15000 = 15000
-            // maxPriceMicros = min(610000, 15000) = 15000 <- BUG!
-            expect(bounds.maxPriceMicros).toBe(15_000);
+            // Effective mid falls back to theirRef (600000).
+            // maxVsTheirFill = 600000 + 20000 = 620000
+            // maxVsMid = 600000 + 15000 = 615000
+            // maxPriceMicros = min(620000, 615000) = 615000
+            expect(bounds.maxPriceMicros).toBe(615_000);
         });
 
         it("should compute correct bounds for low-priced market", () => {
@@ -54,10 +55,10 @@ describe("computePriceBounds", () => {
                 DEFAULT_GUARDRAILS
             );
 
-            // maxVsTheirFill = 50000 + 10000 = 60000
+            // maxVsTheirFill = 50000 + 20000 = 70000
             // maxVsMid = 50000 + 15000 = 65000
-            // maxPriceMicros = min(60000, 65000) = 60000
-            expect(bounds.maxPriceMicros).toBe(60_000);
+            // maxPriceMicros = min(70000, 65000) = 65000
+            expect(bounds.maxPriceMicros).toBe(65_000);
         });
 
         it("should compute correct bounds for high-priced market", () => {
@@ -68,10 +69,10 @@ describe("computePriceBounds", () => {
                 DEFAULT_GUARDRAILS
             );
 
-            // maxVsTheirFill = 900000 + 10000 = 910000
+            // maxVsTheirFill = 900000 + 20000 = 920000
             // maxVsMid = 900000 + 15000 = 915000
-            // maxPriceMicros = min(910000, 915000) = 910000
-            expect(bounds.maxPriceMicros).toBe(910_000);
+            // maxPriceMicros = min(920000, 915000) = 915000
+            expect(bounds.maxPriceMicros).toBe(915_000);
         });
 
         it("should use theirRef limit when mid is higher", () => {
@@ -82,10 +83,10 @@ describe("computePriceBounds", () => {
                 DEFAULT_GUARDRAILS
             );
 
-            // maxVsTheirFill = 500000 + 10000 = 510000 <- limiting factor
+            // maxVsTheirFill = 500000 + 20000 = 520000 <- limiting factor
             // maxVsMid = 520000 + 15000 = 535000
-            // maxPriceMicros = min(510000, 535000) = 510000
-            expect(bounds.maxPriceMicros).toBe(510_000);
+            // maxPriceMicros = min(520000, 535000) = 520000
+            expect(bounds.maxPriceMicros).toBe(520_000);
         });
 
         it("should use mid limit when theirRef is higher", () => {
@@ -112,10 +113,10 @@ describe("computePriceBounds", () => {
                 DEFAULT_GUARDRAILS
             );
 
-            // minVsTheirFill = 600000 - 10000 = 590000
+            // minVsTheirFill = 600000 - 20000 = 580000
             // minVsMid = 600000 - 15000 = 585000
-            // minPriceMicros = max(590000, 585000) = 590000
-            expect(bounds.minPriceMicros).toBe(590_000);
+            // minPriceMicros = max(580000, 585000) = 585000
+            expect(bounds.minPriceMicros).toBe(585_000);
             expect(bounds.maxPriceMicros).toBeUndefined();
         });
 
@@ -127,11 +128,11 @@ describe("computePriceBounds", () => {
                 DEFAULT_GUARDRAILS
             );
 
-            // minVsTheirFill = 600000 - 10000 = 590000
-            // minVsMid = 0 - 15000 = -15000
-            // minPriceMicros = max(590000, -15000) = 590000
+            // minVsTheirFill = 600000 - 20000 = 580000
+            // minVsMid = 600000 - 15000 = 585000 (mid falls back to theirRef)
+            // minPriceMicros = max(580000, 585000) = 585000
             // Note: For SELL, the bug is less impactful because max() is used
-            expect(bounds.minPriceMicros).toBe(590_000);
+            expect(bounds.minPriceMicros).toBe(585_000);
         });
     });
 });

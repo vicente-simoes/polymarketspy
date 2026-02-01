@@ -1,9 +1,10 @@
 /**
- * Snapshot module for price and portfolio snapshots.
+ * Snapshot module for prices and equity/portfolio snapshots.
  *
  * This module handles:
- * - MarketPriceSnapshot: 30-second price refresh for held assets
- * - PortfolioSnapshot: Minute-bucketed portfolio state snapshots
+ * - CurrentPrice: periodic refresh for held assets
+ * - EquityPoint: multi-resolution equity/PnL points
+ * - PortfolioSnapshot: (legacy) minute-bucketed portfolio state snapshots
  */
 
 // Price snapshots
@@ -22,9 +23,13 @@ export {
     triggerSnapshot,
 } from "./portfolio.js";
 
+// Equity points
+export { startEquityPointLoop, stopEquityPointLoop } from "./equity.js";
+
 import { createChildLogger } from "../log/logger.js";
 import { startPriceRefreshLoop, stopPriceRefreshLoop } from "./prices.js";
 import { startPortfolioSnapshotLoop, stopPortfolioSnapshotLoop } from "./portfolio.js";
+import { startEquityPointLoop, stopEquityPointLoop } from "./equity.js";
 
 const logger = createChildLogger({ module: "snapshot" });
 
@@ -34,6 +39,7 @@ const logger = createChildLogger({ module: "snapshot" });
 export function startSnapshotLoops(): void {
     logger.info("Starting snapshot loops");
     startPriceRefreshLoop();
+    startEquityPointLoop();
     startPortfolioSnapshotLoop();
 }
 
@@ -43,5 +49,6 @@ export function startSnapshotLoops(): void {
 export function stopSnapshotLoops(): void {
     logger.info("Stopping snapshot loops");
     stopPriceRefreshLoop();
+    stopEquityPointLoop();
     stopPortfolioSnapshotLoop();
 }

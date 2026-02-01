@@ -6,7 +6,6 @@ import { useToast } from "@/components/ui/use-toast"
 import { useSWRConfig } from "swr"
 
 interface UserMetrics {
-    shadowEquity: number
     execEquity: number
     execRealizedPnl: number
     execUnrealizedPnl: number
@@ -132,14 +131,6 @@ export function UsersTable({ users }: UsersTableProps) {
                                 <div className="mt-4 grid grid-cols-2 gap-3 text-xs">
                                     <div className="rounded-xl border border-[#1F1F1F] bg-[#0D0D0D] p-3">
                                         <div className="text-[#6f6f6f] uppercase tracking-wider">
-                                            Shadow
-                                        </div>
-                                        <div className="mt-1 text-white font-mono">
-                                            {formatCurrency(user.metrics.shadowEquity)}
-                                        </div>
-                                    </div>
-                                    <div className="rounded-xl border border-[#1F1F1F] bg-[#0D0D0D] p-3">
-                                        <div className="text-[#6f6f6f] uppercase tracking-wider">
                                             Exec
                                         </div>
                                         <div className="mt-1 text-white font-mono">
@@ -186,7 +177,6 @@ export function UsersTable({ users }: UsersTableProps) {
                                 </th>
                                 <th className="pb-4 text-left font-medium">Wallet</th>
                                 <th className="pb-4 text-center font-medium">Status</th>
-                                <th className="pb-4 text-center font-medium">Shadow Equity</th>
                                 <th className="pb-4 text-center font-medium">Exec Equity</th>
                                 <th className="pb-4 text-center font-medium">Exec PnL</th>
                                 <th className="pb-4 text-right font-medium pr-2">Actions</th>
@@ -234,9 +224,6 @@ export function UsersTable({ users }: UsersTableProps) {
                                             >
                                                 {user.enabled ? "Active" : "Paused"}
                                             </button>
-                                        </td>
-                                        <td className="py-4 text-center text-white font-medium font-mono">
-                                            {formatCurrency(user.metrics.shadowEquity)}
                                         </td>
                                         <td className="py-4 text-center text-white font-medium font-mono">
                                             {formatCurrency(user.metrics.execEquity)}

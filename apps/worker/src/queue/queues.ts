@@ -60,8 +60,24 @@ export function createQueue(name: string) {
 // Create a worker with logging
 export function createWorker<T>(
     name: string,
-    processor: (job: { data: T; id?: string }) => Promise<void>
+    processor: (job: { data: T; id?: string }) => Promise<void>,
+    options?: { concurrency?: number }
 ) {
+    const defaultConcurrencyByQueue: Partial<Record<(typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES], number>> =
+        {
+            [QUEUE_NAMES.INGEST_EVENTS]: env.WORKER_CONCURRENCY_INGEST ?? 2,
+            [QUEUE_NAMES.GROUP_EVENTS]: env.WORKER_CONCURRENCY_GROUP ?? 1,
+            [QUEUE_NAMES.COPY_ATTEMPT_GLOBAL]: env.WORKER_CONCURRENCY_COPY_GLOBAL ?? 1,
+            [QUEUE_NAMES.RECONCILE]: env.WORKER_CONCURRENCY_RECONCILE ?? 1,
+            [QUEUE_NAMES.PRICES]: env.WORKER_CONCURRENCY_PRICES ?? 1,
+        };
+
+    const resolvedConcurrency =
+        typeof options?.concurrency === "number"
+            ? options.concurrency
+            : defaultConcurrencyByQueue[name as (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES]] ??
+              env.WORKER_CONCURRENCY_DEFAULT;
+
     const worker = new Worker<T>(
         name,
         async (job) => {
@@ -77,9 +93,11 @@ export function createWorker<T>(
         },
         {
             connection: redisConfig,
-            concurrency: 5,
+            concurrency: resolvedConcurrency,
         }
     );
+
+    logger.info({ queue: name, concurrency: resolvedConcurrency }, "BullMQ worker started");
 
     worker.on("failed", (job, err) => {
         logger.error({ queue: name, jobId: job?.id, err }, "Job permanently failed (DLQ)");

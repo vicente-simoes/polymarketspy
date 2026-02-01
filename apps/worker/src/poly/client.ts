@@ -1,7 +1,11 @@
 import { request } from "undici";
 import { z } from "zod";
 import { env } from "../config/env.js";
-import { polymarketHighPriorityLimiter, polymarketLowPriorityLimiter } from "../http/limiters.js";
+import {
+    CLOB_PRIORITY_BACKGROUND,
+    polymarketHighPriorityLimiter,
+    polymarketLowPriorityLimiter,
+} from "../http/limiters.js";
 import { createChildLogger } from "../log/logger.js";
 import {
     PolymarketTradeSchema,
@@ -136,7 +140,8 @@ async function dataApiRequest<T>(
 async function clobApiRequest<T>(
     path: string,
     schema: z.ZodType<T>,
-    params?: Record<string, string>
+    params?: Record<string, string>,
+    options?: { priority?: number }
 ): Promise<T> {
     const url = new URL(path, env.POLYMARKET_CLOB_BASE_URL);
     if (params) {
@@ -145,8 +150,11 @@ async function clobApiRequest<T>(
         }
     }
 
-    return polymarketLowPriorityLimiter.schedule(async () => {
-        logger.debug({ url: url.toString() }, "CLOB API request (low priority)");
+    const run = async () => {
+        logger.debug(
+            { url: url.toString(), priority: options?.priority },
+            "CLOB API request"
+        );
         const response = await request(url.toString(), {
             method: "GET",
             headers: { Accept: "application/json" },
@@ -159,7 +167,12 @@ async function clobApiRequest<T>(
 
         const json = await response.body.json();
         return schema.parse(json);
-    });
+    };
+
+    if (typeof options?.priority === "number") {
+        return polymarketLowPriorityLimiter.schedule({ priority: options.priority }, run);
+    }
+    return polymarketLowPriorityLimiter.schedule(run);
 }
 
 /**
@@ -817,7 +830,10 @@ export async function fetchAllWalletActivity(
  * Fetch order book for a token/asset.
  * Returns null if the token is cached as failed (resolved market) or returns 404.
  */
-export async function fetchOrderBook(tokenId: string): Promise<OrderBook | null> {
+export async function fetchOrderBook(
+    tokenId: string,
+    options?: { priority?: number }
+): Promise<OrderBook | null> {
     // Check if token recently failed (resolved market)
     if (isTokenCached(tokenId)) {
         logger.debug({ tokenId }, "Skipping cached failed token");
@@ -827,7 +843,7 @@ export async function fetchOrderBook(tokenId: string): Promise<OrderBook | null>
     try {
         const book = await clobApiRequest("/book", OrderBookSchema, {
             token_id: tokenId,
-        });
+        }, options);
         logger.debug(
             { tokenId, bids: book.bids.length, asks: book.asks.length },
             "Fetched order book"
@@ -880,7 +896,7 @@ export async function fetchPrices(
         const tokenId = tokenIds[i]!;
 
         try {
-            const book = await fetchOrderBook(tokenId);
+            const book = await fetchOrderBook(tokenId, { priority: CLOB_PRIORITY_BACKGROUND });
 
             // Skip if token is cached as failed (resolved market)
             if (!book) {

@@ -91,7 +91,7 @@ async function main() {
     // Start enrichment processor (async metadata enrichment for WS-first trades)
     startEnrichmentProcessor();
 
-    // Start snapshot loops (price refresh every 30s, portfolio snapshots every minute)
+    // Start snapshot loops (price refresh every ~2m, portfolio snapshots every minute)
     startSnapshotLoops();
 
     // Start settlement loop (closes resolved positions and credits payout)
