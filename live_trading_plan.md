@@ -79,7 +79,7 @@ Effective live state:
 1) Ingest leader events → normalize to `LeaderTradeEvent`
 2) Group/batch (existing aggregator + optional small-trade buffering)
 3) **Decision engine (shared)**:
-   - sizing mode: FIXED_RATE or BUDGETED_DYNAMIC
+   - sizing mode: FIXED_RATE (MVP; budgeted dynamic is currently disabled and will require a redesign to re-enable)
    - trade-level clamps (min/max notional; % bankroll cap)
    - guardrails (spread, depth, price protection, “no new opens near close”, circuit breakers)
 4) Emit a single **CopyIntent** (in-memory object, and/or persisted record) that represents *the decision*, independent of execution mode.
@@ -111,7 +111,7 @@ A CopyIntent must contain enough information to execute both paper and live dete
 - Sizing:
   - `targetNotionalMicros`
   - `targetShareMicros` (derived; used for live order size)
-  - metadata for observability (effectiveRateBps for budgeted dynamic, clamp flags)
+  - metadata for observability (clamp flags; future: budgeted-dynamic effectiveRateBps)
 - Price protections (guardrail bounds):
   - `maxBuyPriceMicros` (BUY) or `minSellPriceMicros` (SELL)
   - `theirReferencePriceMicros` (leader VWAP)
@@ -189,10 +189,14 @@ Caching strategy (MVP):
 ### Book freshness requirements (live)
 Live execution decisions must be based on a fresh book snapshot:
 - Prefer the existing market-channel WS cache (via `bookService`) when enabled; otherwise use REST.
+- **Crossed books are invalid:** if a book snapshot ever has `bestBidMicros > bestAskMicros`, treat it as unusable (this can happen transiently with WS updates). In that case:
+  - wait briefly for WS to recover (up to `liveBookWaitMs`), otherwise
+  - fall back to a REST book fetch for the decision.
 - Require `bookAgeMs <= liveBookFreshnessMs` (MVP default: 2000ms). If stale:
   - wait briefly for WS freshness (MVP default: 500ms), or
   - SKIP with an explicit reason code if we cannot obtain a fresh book.
 - Persist the decision-time `bestBid`, `bestAsk`, book source (WS/REST), and book age for audit/debug.
+- Persist whether we had to fall back to REST due to WS invalidity/staleness (in current code this is `CopyAttempt.usedRestFallback`).
 
 ### Practical live execution policy (MVP)
 Default: **FAK with a slippage cap**, while still respecting decision-engine price bounds.
@@ -266,6 +270,9 @@ Macro spec:
 - `CopyAttempt` gains `tradingMode: TradingMode`
 - Uniqueness becomes:
   - `(tradingMode, portfolioScope, followedUserId, groupKey)` to allow both paper + live for the same group.
+- Book provenance (required for realism/safety; these fields already exist on `CopyAttempt` today):
+  - `bookSource: WS | REST`
+  - `usedRestFallback: boolean` (true when WS was stale/invalid/crossed and we had to fetch a REST book)
 
 Live-specific persistence (new tables):
 - `LiveOrder`
@@ -291,12 +298,16 @@ Live-specific persistence (new tables):
 
 Supporting caches/snapshots (required for correct live trading + UI):
 - `TokenTradingParamsCache` (new): per-token tick/min/step params (see §4).
-- Authoritative real snapshots (to power Real Portfolio):
-  - `PortfolioSnapshot(tradingMode=LIVE, portfolioScope=EXEC_GLOBAL, followedUserId=NULL)` is the Real Portfolio time-series:
-    - equity/cash/exposure derived from exchange positions/cash and our mark prices
-    - PnL breakdown computed from `LIVE` ledger cost basis since baseline (and flagged if out of sync with exchange)
-  - `RealPositionSnapshot` (new): latest (or bucketed) per-token positions as returned by the exchange (`tokenId`, `shareMicros`, `updatedAt`).
-  - Keep “baseline” semantics: when live trading is first enabled (or when explicitly reset), record a baseline so Real Portfolio PnL is “since baseline” instead of depending on unknown pre-existing cost basis.
+- Prices (shared across paper + live):
+  - `CurrentPrice`: guaranteed 1-row-per-assetId “current mark” lookup (used for portfolio valuation).
+- Portfolio read models (paper already uses these; live should have parallel rows keyed by `tradingMode`):
+  - `GlobalPortfolioState(tradingMode, portfolioScope=EXEC_GLOBAL)` (cash + contributed capital/baseline)
+  - `CurrentPosition(tradingMode, assetId)` (net shares + net cashflow by asset)
+  - `CurrentPositionByLeader(tradingMode, assetId, followedUserId)` (attribution slices; multiple leaders can contribute to the same asset)
+  - `EquityPoint(tradingMode, granularity, bucketTime)` (multi-resolution equity/PnL time-series)
+- (Recommended for audit/debug) Authoritative raw snapshots from the exchange:
+  - `RealPositionSnapshot` (new): latest/bucketed per-token positions as returned by the exchange (`tokenId`, `shareMicros`, `updatedAt`)
+  - These snapshots are used to detect drift between exchange positions and our `LIVE` ledger/caches.
 
 ### Portfolio & ledger separation
 We need two independent portfolios:
@@ -305,13 +316,19 @@ We need two independent portfolios:
 
 Macro spec:
 - `LedgerEntry` gains `tradingMode: TradingMode`
-- `PortfolioSnapshot` gains `tradingMode: TradingMode`
+- Portfolio read models gain `tradingMode: TradingMode` so paper vs live can run in parallel without collisions:
+  - `GlobalPortfolioState`: `(tradingMode, portfolioScope)`
+  - `CurrentPosition`: `(tradingMode, assetId)`
+  - `CurrentPositionByLeader`: `(tradingMode, assetId, followedUserId)`
+  - `EquityPoint`: `(tradingMode, granularity, bucketTime)`
 - Uniqueness becomes mode-aware:
   - `LedgerEntry`: `(tradingMode, portfolioScope, refId, entryType)`
-  - `PortfolioSnapshot`: `(tradingMode, portfolioScope, followedUserId, bucketTime)`
 
 Notes:
-- We keep existing `portfolioScope` behavior (EXEC_GLOBAL/EXEC_USER) for paper as-is.
+- Current code reality (Feb 2026):
+  - Paper execution writes `PortfolioScope=EXEC_GLOBAL` only.
+  - `PortfolioScope.SHADOW_USER` is deprecated/unused and must not be relied on for sizing or risk.
+  - `PortfolioScope.EXEC_USER` is legacy and not used for portfolio computation; per-leader attribution is via `followedUserId` + `CurrentPositionByLeader`.
 - For live MVP, execution is a **single global portfolio** (single wallet).
 - Attribution in a single wallet:
   - Every app-placed live order/fill is tagged with `followedUserId` (on `CopyAttempt`, `LiveOrder`, ledger entries).
@@ -432,7 +449,7 @@ Even with WS:
   - health gating:
     - if we cannot obtain fresh authoritative cash + positions, treat live as unhealthy and **do not place orders** even if `liveTrading=ON` (surface the error in Live Trades)
 - Treat exchange positions as authoritative for Real Portfolio:
-  - persist `PortfolioSnapshot(tradingMode=LIVE)` + `RealPositionSnapshot`
+  - persist authoritative reconciliation into the LIVE portfolio read models (`CurrentPosition`, `GlobalPortfolioState`, `EquityPoint`) and optionally raw `RealPositionSnapshot`
   - record `lastReconciledAt` and surface it in Live Trades + Real Portfolio UI
 - Ledger-vs-exchange diffs:
   - compute “ledger-projected positions” from `LedgerEntry(tradingMode=LIVE)` and compare to exchange positions
@@ -467,10 +484,11 @@ Back-compat:
 Goal: same as today, just renamed and framed as paper execution.
 - Data: paper `CopyAttempt` records (and `ExecutableFill`s).
 - UX: same filters (user/market/decision/reason), same pagination/refresh.
+- Include a small badge/indicator when `CopyAttempt.usedRestFallback=true` (so operators can see WS→REST fallbacks at a glance).
 
 ### Paper Portfolio (renamed Portfolio)
 Goal: same as today, but explicitly “paper”.
-- Data: paper `PortfolioSnapshot` + paper `LedgerEntry` aggregation.
+- Data (current code): paper portfolio read models (`GlobalPortfolioState`, `CurrentPosition`, `CurrentPositionByLeader`, `CurrentPrice`, `EquityPoint`) plus `TokenMetadataCache` for display.
 - The header/labels should say “Paper Portfolio” (not “Executable Portfolio”).
 
 ### Live Trades (new)
@@ -491,6 +509,7 @@ At minimum, it contains:
   2) Live Fills / Trades (one row per exchange fill; include an **origin** badge: APP vs EXTERNAL)
   3) Skipped / Rejected (live-mode copy attempts that did not place, with reason codes)
   4) Positions snapshot (from exchange-based Real Portfolio snapshots)
+  - For any table row that depends on a decision-time book, include a small `WS`/`REST` indicator and whether a REST fallback was used.
 - **Kill switches**
   - global emergency OFF for live
   - per-user OFF (force-off override)
