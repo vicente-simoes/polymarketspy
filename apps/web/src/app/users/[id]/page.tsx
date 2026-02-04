@@ -35,6 +35,7 @@ interface UserDetailResponse {
     label: string
     profileWallet: string
     enabled: boolean
+    liveOverride: "INHERIT" | "FORCE_ON" | "FORCE_OFF"
     proxies: { id: string; wallet: string }[]
     metrics: {
         shadowEquity: number
@@ -234,6 +235,49 @@ export default function UserDetailPage({ params }: { params: Promise<{ id: strin
         }
     }
 
+    const handleLiveOverrideChange = async (next: UserDetailResponse["liveOverride"]) => {
+        if (!user) return
+
+        mutate((current) => (current ? { ...current, liveOverride: next } : current), false)
+
+        try {
+            const response = await fetch("/api/users/live-override", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ id: user.id, liveOverride: next }),
+            })
+
+            if (!response.ok) {
+                throw new Error("Failed to update live override")
+            }
+
+            const updated = await response.json()
+            mutate(
+                (current) =>
+                    current
+                        ? {
+                              ...current,
+                              liveOverride:
+                                  updated.liveOverride === "FORCE_ON" ||
+                                  updated.liveOverride === "FORCE_OFF" ||
+                                  updated.liveOverride === "INHERIT"
+                                      ? updated.liveOverride
+                                      : current.liveOverride,
+                          }
+                        : current,
+                false
+            )
+            mutate()
+        } catch (updateError) {
+            mutate()
+            toast({
+                variant: "destructive",
+                title: "Update failed",
+                description: "Could not update live override.",
+            })
+        }
+    }
+
     return (
         <div className="relative w-full bg-black text-white overflow-hidden min-h-dvh md:h-screen">
             <Header />
@@ -300,12 +344,35 @@ export default function UserDetailPage({ params }: { params: Promise<{ id: strin
                                                     {user.enabled ? "Active" : "Paused"}
                                                 </span>
                                                 <div className="flex items-center gap-2 text-xs text-[#6f6f6f]">
-                                                    
                                                     <Switch
                                                         checked={user.enabled}
                                                         onCheckedChange={handleToggle}
                                                         className="data-[state=checked]:bg-[#86efac] data-[state=unchecked]:bg-[#27272A]"
                                                     />
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                            <div className="flex flex-col gap-2">
+                                                <div className="text-xs uppercase tracking-wider text-[#6f6f6f]">
+                                                    Live Override
+                                                </div>
+                                                <select
+                                                    value={user.liveOverride}
+                                                    onChange={(event) =>
+                                                        handleLiveOverrideChange(
+                                                            event.target.value as UserDetailResponse["liveOverride"]
+                                                        )
+                                                    }
+                                                    className="h-10 rounded-lg border border-[#27272A] bg-[#111111] px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-[#86efac]"
+                                                >
+                                                    <option value="INHERIT">Inherit</option>
+                                                    <option value="FORCE_ON">Force ON</option>
+                                                    <option value="FORCE_OFF">Force OFF</option>
+                                                </select>
+                                                <div className="text-xs text-[#6f6f6f]">
+                                                    Applies only when global live trading is ON.
                                                 </div>
                                             </div>
                                         </div>
@@ -318,7 +385,7 @@ export default function UserDetailPage({ params }: { params: Promise<{ id: strin
                                                 </div>
                                             </div>
                                             <div className="text-[#6f6f6f]">
-                                                Copy Attempts
+                                                Paper Trades
                                                 <div className="text-white text-lg font-semibold">
                                                     {attemptStats?.totalAttempts ?? 0}
                                                 </div>
@@ -717,7 +784,7 @@ export default function UserDetailPage({ params }: { params: Promise<{ id: strin
                                     </div>
 
                                     <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
-                                        <div className="text-sm text-[#6f6f6f]">Copy Attempts</div>
+                                        <div className="text-sm text-[#6f6f6f]">Paper Trades</div>
                                         <div className="mt-4 overflow-x-auto">
                                             <table className="w-full text-sm">
                                                 <thead>

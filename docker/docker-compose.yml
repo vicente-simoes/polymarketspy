@@ -49,6 +49,7 @@ services:
     environment:
       NODE_ENV: production
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      CLOB_BOOK_WS_ENABLED: ${CLOB_BOOK_WS_ENABLED:-true}
       DATABASE_URL: postgresql://copybot:${POSTGRES_PASSWORD}@db:5432/copybot?schema=public
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
       ALCHEMY_WS_URL: ${ALCHEMY_WS_URL}

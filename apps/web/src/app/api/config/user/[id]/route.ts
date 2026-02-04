@@ -2,8 +2,20 @@ import { NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import prisma from "@/lib/prisma"
+import { TradingMode } from "@prisma/client"
 
 export const dynamic = "force-dynamic"
+
+function parseTradingMode(request: Request): TradingMode {
+    try {
+        const url = new URL(request.url)
+        const raw = url.searchParams.get("mode")
+        if (raw === TradingMode.LIVE) return TradingMode.LIVE
+        return TradingMode.PAPER
+    } catch {
+        return TradingMode.PAPER
+    }
+}
 
 export async function POST(
     request: Request,
@@ -15,6 +27,7 @@ export async function POST(
     }
 
     try {
+        const tradingMode = parseTradingMode(request)
         const json = await request.json()
         const { guardrails, sizing } = json
         const { id: userId } = await params
@@ -30,7 +43,7 @@ export async function POST(
             // NOTE: We may have multiple rows due to missing DB uniqueness constraints.
             // Always update ALL matching rows to keep reads consistent.
             const result = await prisma.guardrailConfig.updateMany({
-                where: { scope: "USER", followedUserId: userId },
+                where: { scope: "USER", tradingMode: tradingMode, followedUserId: userId },
                 data: { configJson: guardrails }
             })
 
@@ -38,6 +51,7 @@ export async function POST(
                 await prisma.guardrailConfig.create({
                     data: {
                         scope: "USER",
+                        tradingMode: tradingMode,
                         followedUserId: userId,
                         configJson: guardrails
                     }
@@ -48,7 +62,7 @@ export async function POST(
         // Update User Sizing
         if (sizing) {
             const result = await prisma.copySizingConfig.updateMany({
-                where: { scope: "USER", followedUserId: userId },
+                where: { scope: "USER", tradingMode: tradingMode, followedUserId: userId },
                 data: { configJson: sizing }
             })
 
@@ -56,6 +70,7 @@ export async function POST(
                 await prisma.copySizingConfig.create({
                     data: {
                         scope: "USER",
+                        tradingMode: tradingMode,
                         followedUserId: userId,
                         configJson: sizing
                     }
@@ -83,19 +98,21 @@ export async function GET(
     }
 
     try {
+        const tradingMode = parseTradingMode(request)
         const { id: userId } = await params
         // Use deterministic ordering in case duplicates exist.
         const guardrails = await prisma.guardrailConfig.findFirst({
-            where: { scope: "USER", followedUserId: userId },
+            where: { scope: "USER", tradingMode: tradingMode, followedUserId: userId },
             orderBy: { updatedAt: "desc" }
         })
         const sizing = await prisma.copySizingConfig.findFirst({
-            where: { scope: "USER", followedUserId: userId },
+            where: { scope: "USER", tradingMode: tradingMode, followedUserId: userId },
             orderBy: { updatedAt: "desc" }
         })
 
         return NextResponse.json(
             {
+                tradingMode,
                 guardrails: guardrails?.configJson || {},
                 sizing: sizing?.configJson || {}
             },

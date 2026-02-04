@@ -21,15 +21,21 @@ import {
 } from "lucide-react"
 
 interface GlobalConfigResponse {
+    tradingMode?: "PAPER" | "LIVE"
     guardrails: Record<string, any>
     sizing: Record<string, any>
     system?: {
         initialBankrollMicros?: number
+        copyEngineEnabled?: boolean
+        paperTradingEnabled?: boolean
+        liveTradingEnabled?: boolean
+        liveTradingReadOnlyEnabled?: boolean
     }
     smallTradeBuffering?: Record<string, any>
 }
 
 interface UserConfigResponse {
+    tradingMode?: "PAPER" | "LIVE"
     guardrails: Record<string, any>
     sizing: Record<string, any>
 }
@@ -79,6 +85,19 @@ type SmallTradeBufferingForm = {
     nettingMode: "sameSideOnly" | "netBuySell"
 }
 
+type ConfigMode = "PAPER" | "LIVE"
+
+type LiveGuardrailsForm = {
+    liveSlippageBuyPct: string
+    liveSlippageSellPct: string
+    liveBookFreshnessMs: string
+    liveBookWaitMs: string
+    liveOrderType: "FAK" | "FOK" | "GTC"
+    useFokForCorrections: boolean
+    liveMaxWorseningSellCents: string
+    liveMaxUnderMidSellCents: string
+}
+
 const guardrailsDefaults = {
     maxWorseningVsTheirFillMicros: 20_000,
     maxOverMidMicros: 15_000,
@@ -103,7 +122,11 @@ const sizingDefaults = {
 }
 
 const systemDefaults = {
-    initialBankrollMicros: 100_000_000
+    initialBankrollMicros: 100_000_000,
+    copyEngineEnabled: true,
+    paperTradingEnabled: true,
+    liveTradingEnabled: false,
+    liveTradingReadOnlyEnabled: false,
 }
 
 const smallTradeBufferingDefaults = {
@@ -117,6 +140,7 @@ const smallTradeBufferingDefaults = {
 }
 
 const SELECTED_USER_ID_STORAGE_KEY = "config:selectedUserId"
+const SELECTED_MODE_STORAGE_KEY = "config:selectedMode"
 
 const toFormValue = (
     value: number | undefined,
@@ -286,6 +310,62 @@ const smallTradeBufferingToForm = (config: Record<string, any>): SmallTradeBuffe
     nettingMode: config.nettingMode === "netBuySell" ? "netBuySell" : "sameSideOnly"
 })
 
+const liveGuardrailsDefaults = {
+    liveSlippageBpsBuy: 50, // 0.50%
+    liveSlippageBpsSell: 100, // 1.00%
+    liveBookFreshnessMs: 2000,
+    liveBookWaitMs: 500,
+    liveOrderType: "FAK" as const,
+    useFokForCorrections: false,
+}
+
+const liveGuardrailsToForm = (config: Record<string, any>, allowEmpty: boolean): LiveGuardrailsForm => ({
+    liveSlippageBuyPct: toFormValue(
+        config.liveSlippageBpsBuy,
+        liveGuardrailsDefaults.liveSlippageBpsBuy,
+        (value) => value / 100,
+        allowEmpty
+    ),
+    liveSlippageSellPct: toFormValue(
+        config.liveSlippageBpsSell,
+        liveGuardrailsDefaults.liveSlippageBpsSell,
+        (value) => value / 100,
+        allowEmpty
+    ),
+    liveBookFreshnessMs: toFormValue(
+        config.liveBookFreshnessMs,
+        liveGuardrailsDefaults.liveBookFreshnessMs,
+        (value) => value,
+        allowEmpty
+    ),
+    liveBookWaitMs: toFormValue(
+        config.liveBookWaitMs,
+        liveGuardrailsDefaults.liveBookWaitMs,
+        (value) => value,
+        allowEmpty
+    ),
+    liveOrderType:
+        config.liveOrderType === "FOK" || config.liveOrderType === "GTC" || config.liveOrderType === "FAK"
+            ? config.liveOrderType
+            : liveGuardrailsDefaults.liveOrderType,
+    useFokForCorrections:
+        typeof config.useFokForCorrections === "boolean"
+            ? config.useFokForCorrections
+            : liveGuardrailsDefaults.useFokForCorrections,
+    liveMaxWorseningSellCents: toFormValue(
+        config.liveMaxWorseningSellMicros,
+        0,
+        (value) => value / 10_000,
+        true
+    ),
+    liveMaxUnderMidSellCents: toFormValue(
+        config.liveMaxUnderMidSellMicros,
+        0,
+        (value) => value / 10_000,
+        true
+    ),
+})
+
 const parseNumber = (value: string, label: string) => {
     const parsed = Number(value)
     if (!Number.isFinite(parsed)) {
@@ -386,6 +466,37 @@ const buildSmallTradeBufferingPayload = (form: SmallTradeBufferingForm) => {
     }
 }
 
+const buildLiveGuardrailsPayload = (form: LiveGuardrailsForm, allowEmpty: boolean) => {
+    const payload: Record<string, any> = {}
+
+    const addNumber = (key: string, value: string, converter: (value: number) => number) => {
+        if (allowEmpty && value.trim() === "") return
+        const parsed = parseNumber(value, key)
+        payload[key] = converter(parsed)
+    }
+
+    addNumber("liveSlippageBpsBuy", form.liveSlippageBuyPct, (value) => Math.round(value * 100))
+    addNumber("liveSlippageBpsSell", form.liveSlippageSellPct, (value) => Math.round(value * 100))
+    addNumber("liveBookFreshnessMs", form.liveBookFreshnessMs, (value) => Math.round(value))
+    addNumber("liveBookWaitMs", form.liveBookWaitMs, (value) => Math.round(value))
+
+    payload.liveOrderType = form.liveOrderType
+    payload.useFokForCorrections = form.useFokForCorrections
+
+    if (form.liveMaxWorseningSellCents.trim() !== "") {
+        payload.liveMaxWorseningSellMicros = Math.round(
+            parseNumber(form.liveMaxWorseningSellCents, "liveMaxWorseningSellCents") * 10_000
+        )
+    }
+    if (form.liveMaxUnderMidSellCents.trim() !== "") {
+        payload.liveMaxUnderMidSellMicros = Math.round(
+            parseNumber(form.liveMaxUnderMidSellCents, "liveMaxUnderMidSellCents") * 10_000
+        )
+    }
+
+    return payload
+}
+
 const formatPercent = (value: number) => `${value.toFixed(1)}%`
 
 const formatBpsPercent = (value: number) => `${(value / 100).toFixed(1)}%`
@@ -439,12 +550,15 @@ export default function ConfigPage() {
     const { toast } = useToast()
     const { mutate } = useSWRConfig()
 
+    const [configMode, setConfigMode] = useState<ConfigMode>("PAPER")
+    const globalConfigKey = useMemo(() => `/api/config/global?mode=${configMode}`, [configMode])
+
     const {
         data: globalConfig,
         error: globalError,
         isLoading: globalLoading,
         mutate: mutateGlobal
-    } = useSWR<GlobalConfigResponse>("/api/config/global", fetcher)
+    } = useSWR<GlobalConfigResponse>(globalConfigKey, fetcher)
 
     const { data: users } = useSWR<UserOption[]>("/api/users", fetcher)
 
@@ -452,13 +566,17 @@ export default function ConfigPage() {
     const [globalGuardrailsForm, setGlobalGuardrailsForm] = useState<GuardrailsForm>(
         guardrailsToForm({}, false)
     )
+    const [globalLiveGuardrailsForm, setGlobalLiveGuardrailsForm] = useState<LiveGuardrailsForm>(
+        liveGuardrailsToForm({}, false)
+    )
     const [globalSizingForm, setGlobalSizingForm] = useState<SizingForm>(sizingToForm({}, false))
     const [userGuardrailsForm, setUserGuardrailsForm] = useState<GuardrailsForm>(
         guardrailsToForm({}, true)
     )
     const [userSizingForm, setUserSizingForm] = useState<SizingForm>(sizingToForm({}, true))
     const [globalInitialized, setGlobalInitialized] = useState(false)
-    const [systemInitialized, setSystemInitialized] = useState(false)
+    const [systemControlsInitialized, setSystemControlsInitialized] = useState(false)
+    const [bankrollInitialized, setBankrollInitialized] = useState(false)
     const [userDirty, setUserDirty] = useState(false)
     const [savingGlobal, setSavingGlobal] = useState(false)
     const [savingSystem, setSavingSystem] = useState(false)
@@ -468,6 +586,12 @@ export default function ConfigPage() {
     const [initialBankrollUsd, setInitialBankrollUsd] = useState(
         String(systemDefaults.initialBankrollMicros / 1_000_000)
     )
+    const [copyEngineEnabled, setCopyEngineEnabled] = useState(systemDefaults.copyEngineEnabled)
+    const [paperTradingEnabled, setPaperTradingEnabled] = useState(systemDefaults.paperTradingEnabled)
+    const [liveTradingEnabled, setLiveTradingEnabled] = useState(systemDefaults.liveTradingEnabled)
+    const [liveTradingReadOnlyEnabled, setLiveTradingReadOnlyEnabled] = useState(
+        systemDefaults.liveTradingReadOnlyEnabled
+    )
     const [depositUsd, setDepositUsd] = useState("")
     const [depositing, setDepositing] = useState(false)
     const [bufferingForm, setBufferingForm] = useState<SmallTradeBufferingForm>(
@@ -475,6 +599,39 @@ export default function ConfigPage() {
     )
     const [bufferingInitialized, setBufferingInitialized] = useState(false)
     const [savingBuffering, setSavingBuffering] = useState(false)
+
+    useEffect(() => {
+        try {
+            const stored = window.localStorage.getItem(SELECTED_MODE_STORAGE_KEY)
+            if (stored === "LIVE" || stored === "PAPER") {
+                setConfigMode(stored)
+            }
+        } catch {
+            // ignore localStorage issues (private mode, etc.)
+        }
+    }, [])
+
+    useEffect(() => {
+        try {
+            window.localStorage.setItem(SELECTED_MODE_STORAGE_KEY, configMode)
+        } catch {
+            // ignore localStorage issues (private mode, etc.)
+        }
+
+        setGlobalInitialized(false)
+        setSystemControlsInitialized(false)
+        setBankrollInitialized(false)
+        setBufferingInitialized(false)
+        setGlobalGuardrailsForm(guardrailsToForm({}, false))
+        setGlobalLiveGuardrailsForm(liveGuardrailsToForm({}, false))
+        setGlobalSizingForm(sizingToForm({}, false))
+        setBufferingForm(smallTradeBufferingToForm({}))
+        setTestResult(null)
+
+        setUserDirty(false)
+        setUserGuardrailsForm(guardrailsToForm({}, true))
+        setUserSizingForm(sizingToForm({}, true))
+    }, [configMode])
 
     useEffect(() => {
         try {
@@ -502,7 +659,7 @@ export default function ConfigPage() {
         }
     }, [selectedUserId])
 
-    const userConfigKey = selectedUserId ? `/api/config/user/${selectedUserId}` : null
+    const userConfigKey = selectedUserId ? `/api/config/user/${selectedUserId}?mode=${configMode}` : null
     const { data: userConfig } = useSWR<UserConfigResponse>(userConfigKey, fetcher)
 
     useEffect(() => {
@@ -521,22 +678,51 @@ export default function ConfigPage() {
     useEffect(() => {
         if (globalConfig && !globalInitialized) {
             setGlobalGuardrailsForm(guardrailsToForm(globalConfig.guardrails || {}, false))
+            setGlobalLiveGuardrailsForm(liveGuardrailsToForm(globalConfig.guardrails || {}, false))
             setGlobalSizingForm(sizingToForm(globalConfig.sizing || {}, false))
             setGlobalInitialized(true)
         }
     }, [globalConfig, globalInitialized])
 
     useEffect(() => {
-        if (globalConfig && !systemInitialized) {
+        if (globalConfig && !systemControlsInitialized) {
+            const system = globalConfig.system ?? {}
+            setCopyEngineEnabled(
+                typeof system.copyEngineEnabled === "boolean"
+                    ? system.copyEngineEnabled
+                    : systemDefaults.copyEngineEnabled
+            )
+            setPaperTradingEnabled(
+                typeof system.paperTradingEnabled === "boolean"
+                    ? system.paperTradingEnabled
+                    : systemDefaults.paperTradingEnabled
+            )
+            setLiveTradingEnabled(
+                typeof system.liveTradingEnabled === "boolean"
+                    ? system.liveTradingEnabled
+                    : systemDefaults.liveTradingEnabled
+            )
+            setLiveTradingReadOnlyEnabled(
+                typeof system.liveTradingReadOnlyEnabled === "boolean"
+                    ? system.liveTradingReadOnlyEnabled
+                    : systemDefaults.liveTradingReadOnlyEnabled
+            )
+            setSystemControlsInitialized(true)
+        }
+    }, [globalConfig, systemControlsInitialized])
+
+    useEffect(() => {
+        if (configMode !== "PAPER") return
+        if (globalConfig && !bankrollInitialized) {
             const microsRaw = globalConfig.system?.initialBankrollMicros
             const micros =
                 typeof microsRaw === "number" && Number.isFinite(microsRaw)
                     ? microsRaw
                     : systemDefaults.initialBankrollMicros
             setInitialBankrollUsd(String(micros / 1_000_000))
-            setSystemInitialized(true)
+            setBankrollInitialized(true)
         }
-    }, [globalConfig, systemInitialized])
+    }, [configMode, globalConfig, bankrollInitialized])
 
     useEffect(() => {
         if (globalConfig && !bufferingInitialized) {
@@ -561,8 +747,13 @@ export default function ConfigPage() {
     const handleSaveGlobalGuardrails = async () => {
         try {
             setSavingGlobal(true)
-            const guardrails = buildGuardrailsPayload(globalGuardrailsForm, false)
-            const response = await fetch("/api/config/global", {
+            const guardrails: Record<string, any> = {
+                ...buildGuardrailsPayload(globalGuardrailsForm, false),
+                ...(configMode === "LIVE"
+                    ? buildLiveGuardrailsPayload(globalLiveGuardrailsForm, false)
+                    : {}),
+            }
+            const response = await fetch(globalConfigKey, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ guardrails })
@@ -587,7 +778,7 @@ export default function ConfigPage() {
 	        try {
 	            setSavingGlobal(true)
 	            const sizing = buildSizingPayload(globalSizingForm, false)
-	            const response = await fetch("/api/config/global", {
+	            const response = await fetch(globalConfigKey, {
 	                method: "POST",
 	                headers: { "Content-Type": "application/json" },
 	                body: JSON.stringify({ sizing })
@@ -617,7 +808,7 @@ export default function ConfigPage() {
             }
             const initialBankrollMicros = Math.round(parsed * 1_000_000)
 
-            const response = await fetch("/api/config/global", {
+            const response = await fetch("/api/config/global?mode=PAPER", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ system: { initialBankrollMicros } })
@@ -625,13 +816,49 @@ export default function ConfigPage() {
             if (!response.ok) {
                 throw new Error("Failed to save bankroll")
             }
-            await mutateGlobal()
+            await mutate("/api/config/global?mode=PAPER")
             toast({ title: "Saved", description: "Initial bankroll updated." })
         } catch (error) {
             toast({
                 variant: "destructive",
                 title: "Save failed",
                 description: "Check bankroll value for invalid numbers."
+            })
+        } finally {
+            setSavingSystem(false)
+        }
+    }
+
+    const handleSaveExecutionControls = async () => {
+        try {
+            setSavingSystem(true)
+
+            const response = await fetch("/api/config/global?mode=PAPER", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    system: {
+                        copyEngineEnabled,
+                        paperTradingEnabled,
+                        liveTradingEnabled,
+                        liveTradingReadOnlyEnabled,
+                    },
+                }),
+            })
+            if (!response.ok) {
+                throw new Error("Failed to save execution controls")
+            }
+
+            await mutate("/api/config/global?mode=PAPER")
+            await mutate("/api/config/global?mode=LIVE")
+            mutate("/api/live/status")
+            mutate("/api/overview")
+            toast({ title: "Saved", description: "Execution controls updated." })
+        } catch (error) {
+            toast({
+                variant: "destructive",
+                title: "Save failed",
+                description: "Could not update execution controls.",
             })
         } finally {
             setSavingSystem(false)
@@ -675,7 +902,7 @@ export default function ConfigPage() {
             setSavingUser(true)
             const guardrails = buildGuardrailsPayload(userGuardrailsForm, true)
             const sizing = buildSizingPayload(userSizingForm, true)
-            const response = await fetch(`/api/config/user/${selectedUserId}`, {
+            const response = await fetch(`/api/config/user/${selectedUserId}?mode=${configMode}`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ guardrails, sizing })
@@ -710,7 +937,7 @@ export default function ConfigPage() {
             const response = await fetch("/api/config/test", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ scope: "GLOBAL" })
+                body: JSON.stringify({ scope: "GLOBAL", tradingMode: configMode })
             })
             if (!response.ok) {
                 throw new Error("Failed to test config")
@@ -732,7 +959,7 @@ export default function ConfigPage() {
         try {
             setSavingBuffering(true)
             const smallTradeBuffering = buildSmallTradeBufferingPayload(bufferingForm)
-            const response = await fetch("/api/config/global", {
+            const response = await fetch(globalConfigKey, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ smallTradeBuffering })
@@ -765,19 +992,134 @@ export default function ConfigPage() {
                                 <p className="text-sm text-[#6f6f6f]">Configuration</p>
                                 <h1 className="text-2xl md:text-3xl font-bold text-white">Guardrails & Sizing</h1>
                             </div>
-                            <Button
-                                onClick={handleTestConfig}
-                                disabled={testLoading}
-                                className="bg-[#86efac] text-black hover:bg-[#4ade80]"
-                            >
-                                <Beaker className="mr-2 h-4 w-4" />
-                                {testLoading ? "Testing..." : "Test Config (24h)"}
-                            </Button>
+                            <div className="flex flex-wrap items-center gap-3">
+                                <div className="flex items-center gap-2 rounded-full border border-[#27272A] bg-[#111111] p-1 text-sm text-[#cfcfcf]">
+                                    {(["PAPER", "LIVE"] as const).map((mode) => (
+                                        <button
+                                            key={mode}
+                                            className={`px-3 py-1 text-xs rounded-full ${
+                                                configMode === mode
+                                                    ? "bg-[#1f1f1f] text-white"
+                                                    : "text-[#b0b0b0] hover:text-white"
+                                            }`}
+                                            onClick={() => setConfigMode(mode)}
+                                        >
+                                            {mode === "PAPER" ? "Paper" : "Live"}
+                                        </button>
+                                    ))}
+                                </div>
+                                <Button
+                                    onClick={handleTestConfig}
+                                    disabled={testLoading}
+                                    className="bg-[#86efac] text-black hover:bg-[#4ade80]"
+                                >
+                                    <Beaker className="mr-2 h-4 w-4" />
+                                    {testLoading ? "Testing..." : "Test Config (24h)"}
+                                </Button>
+	                            </div>
+	                        </div>
+
+                        <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6">
+                            <div className="flex items-center justify-between gap-4">
+                                <div>
+                                    <div className="text-sm text-[#6f6f6f] flex items-center gap-2">
+                                        <Layers className="h-4 w-4 text-[#86efac]" />
+                                        Execution Controls
+                                    </div>
+                                    <div className="text-xs text-[#6f6f6f]">
+                                        Toggle what the worker enqueues and executes (paper vs live).
+                                    </div>
+                                </div>
+                                <Button
+                                    onClick={handleSaveExecutionControls}
+                                    disabled={savingSystem}
+                                    className="bg-[#86efac] text-black hover:bg-[#4ade80]"
+                                >
+                                    {savingSystem ? "Saving..." : "Save Controls"}
+                                </Button>
+                            </div>
+
+                            <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="flex items-center justify-between gap-4 rounded-lg border border-[#27272A] bg-[#111111] px-3 py-3">
+                                    <div className="min-w-0">
+                                        <div className="text-sm text-white">Copy Engine (master)</div>
+                                        <div className="text-xs text-[#6f6f6f]">
+                                            Master kill switch. Disables both paper and live.
+                                        </div>
+                                    </div>
+                                    <label className="flex items-center gap-2 text-sm text-white">
+                                        <input
+                                            type="checkbox"
+                                            checked={copyEngineEnabled}
+                                            onChange={(event) => setCopyEngineEnabled(event.target.checked)}
+                                        />
+                                        <span>{copyEngineEnabled ? "ON" : "OFF"}</span>
+                                    </label>
+                                </div>
+
+                                <div className="flex items-center justify-between gap-4 rounded-lg border border-[#27272A] bg-[#111111] px-3 py-3">
+                                    <div className="min-w-0">
+                                        <div className="text-sm text-white">Paper Trading</div>
+                                        <div className="text-xs text-[#6f6f6f]">
+                                            Enables the simulated copy execution path.
+                                        </div>
+                                    </div>
+                                    <label className="flex items-center gap-2 text-sm text-white">
+                                        <input
+                                            type="checkbox"
+                                            checked={paperTradingEnabled}
+                                            onChange={(event) => setPaperTradingEnabled(event.target.checked)}
+                                        />
+                                        <span>{paperTradingEnabled ? "ON" : "OFF"}</span>
+                                    </label>
+                                </div>
+
+                                <div className="flex items-center justify-between gap-4 rounded-lg border border-[#27272A] bg-[#111111] px-3 py-3">
+                                    <div className="min-w-0">
+                                        <div className="text-sm text-white">Live Trading (place orders)</div>
+                                        <div className="text-xs text-[#6f6f6f]">
+                                            Enables authenticated order placement (requires live secrets).
+                                        </div>
+                                    </div>
+                                    <label className="flex items-center gap-2 text-sm text-white">
+                                        <input
+                                            type="checkbox"
+                                            checked={liveTradingEnabled}
+                                            onChange={(event) => setLiveTradingEnabled(event.target.checked)}
+                                        />
+                                        <span>{liveTradingEnabled ? "ON" : "OFF"}</span>
+                                    </label>
+                                </div>
+
+                                <div className="flex items-center justify-between gap-4 rounded-lg border border-[#27272A] bg-[#111111] px-3 py-3">
+                                    <div className="min-w-0">
+                                        <div className="text-sm text-white">Live Read-Only (reconcile only)</div>
+                                        <div className="text-xs text-[#6f6f6f]">
+                                            Runs user-channel WS + reconciliation without placing orders.
+                                        </div>
+                                    </div>
+                                    <label className="flex items-center gap-2 text-sm text-white">
+                                        <input
+                                            type="checkbox"
+                                            checked={liveTradingReadOnlyEnabled}
+                                            onChange={(event) =>
+                                                setLiveTradingReadOnlyEnabled(event.target.checked)
+                                            }
+                                        />
+                                        <span>{liveTradingReadOnlyEnabled ? "ON" : "OFF"}</span>
+                                    </label>
+                                </div>
+                            </div>
+
+                            <div className="mt-3 text-xs text-[#6f6f6f]">
+                                Changes take effect shortly in the worker. If live is enabled, ensure the worker is
+                                configured with live CLOB credentials.
+                            </div>
                         </div>
 
-                        <div className="grid grid-cols-1 xl:grid-cols-[1.4fr_1fr] gap-6">
-                            <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6 xl:row-span-2">
-                                <div className="flex items-center justify-between gap-4">
+	                        <div className="grid grid-cols-1 xl:grid-cols-[1.4fr_1fr] gap-6">
+	                            <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6 xl:row-span-2">
+	                                <div className="flex items-center justify-between gap-4">
                                     <div>
                                         <div className="text-sm text-[#6f6f6f] flex items-center gap-2">
                                             <Shield className="h-4 w-4 text-[#86efac]" />
@@ -989,8 +1331,144 @@ export default function ConfigPage() {
                                         Failed to load guardrails.
                                     </div>
                                 ) : null}
+
+                                {configMode === "LIVE" ? (
+                                    <div className="mt-6 border-t border-[#27272A] pt-6">
+                                        <div className="text-sm text-[#6f6f6f] flex items-center gap-2">
+                                            <Layers className="h-4 w-4 text-[#86efac]" />
+                                            Live Execution Guardrails
+                                        </div>
+                                        <div className="mt-1 text-xs text-[#6f6f6f]">
+                                            These settings only affect LIVE placement.
+                                        </div>
+
+                                        <div className="mt-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                                            <Field
+                                                label="BUY Slippage"
+                                                value={globalLiveGuardrailsForm.liveSlippageBuyPct}
+                                                onChange={(value) =>
+                                                    setGlobalLiveGuardrailsForm((prev) => ({
+                                                        ...prev,
+                                                        liveSlippageBuyPct: value,
+                                                    }))
+                                                }
+                                                suffix="%"
+                                                helper="e.g. 0.50 = 50 bps"
+                                            />
+                                            <Field
+                                                label="SELL Slippage"
+                                                value={globalLiveGuardrailsForm.liveSlippageSellPct}
+                                                onChange={(value) =>
+                                                    setGlobalLiveGuardrailsForm((prev) => ({
+                                                        ...prev,
+                                                        liveSlippageSellPct: value,
+                                                    }))
+                                                }
+                                                suffix="%"
+                                                helper="More tolerant sells can reduce missed exits"
+                                            />
+                                            <Field
+                                                label="Book Freshness"
+                                                value={globalLiveGuardrailsForm.liveBookFreshnessMs}
+                                                onChange={(value) =>
+                                                    setGlobalLiveGuardrailsForm((prev) => ({
+                                                        ...prev,
+                                                        liveBookFreshnessMs: value,
+                                                    }))
+                                                }
+                                                suffix="ms"
+                                                helper="Max acceptable book age"
+                                            />
+                                            <Field
+                                                label="Book Wait"
+                                                value={globalLiveGuardrailsForm.liveBookWaitMs}
+                                                onChange={(value) =>
+                                                    setGlobalLiveGuardrailsForm((prev) => ({
+                                                        ...prev,
+                                                        liveBookWaitMs: value,
+                                                    }))
+                                                }
+                                                suffix="ms"
+                                                helper="Wait this long for fresh WS book"
+                                            />
+
+                                            <div className="flex flex-col gap-2">
+                                                <label className="text-xs uppercase tracking-wider text-[#6f6f6f]">
+                                                    Live Order Type
+                                                </label>
+                                                <select
+                                                    value={globalLiveGuardrailsForm.liveOrderType}
+                                                    onChange={(event) =>
+                                                        setGlobalLiveGuardrailsForm((prev) => ({
+                                                            ...prev,
+                                                            liveOrderType: event.target.value as "FAK" | "FOK" | "GTC",
+                                                        }))
+                                                    }
+                                                    className="h-10 rounded-lg border border-[#27272A] bg-[#111111] px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-[#86efac]"
+                                                >
+                                                    <option value="FAK">FAK (default)</option>
+                                                    <option value="FOK">FOK</option>
+                                                    <option value="GTC">GTC (not recommended)</option>
+                                                </select>
+                                                <span className="text-xs text-[#6f6f6f]">
+                                                    FAK is safest for copy trading.
+                                                </span>
+                                            </div>
+
+                                            <div className="flex flex-col gap-2">
+                                                <label className="text-xs uppercase tracking-wider text-[#6f6f6f]">
+                                                    Use FOK for Corrections
+                                                </label>
+                                                <div className="flex items-center gap-3 rounded-lg border border-[#27272A] bg-[#111111] px-3 py-2">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={globalLiveGuardrailsForm.useFokForCorrections}
+                                                        onChange={(event) =>
+                                                            setGlobalLiveGuardrailsForm((prev) => ({
+                                                                ...prev,
+                                                                useFokForCorrections: event.target.checked,
+                                                            }))
+                                                        }
+                                                    />
+                                                    <span className="text-sm text-white">Enabled</span>
+                                                </div>
+                                                <span className="text-xs text-[#6f6f6f]">
+                                                    Optional: only for reconciliation/correction flows.
+                                                </span>
+                                            </div>
+
+                                            <Field
+                                                label="SELL Max Worsening Override"
+                                                value={globalLiveGuardrailsForm.liveMaxWorseningSellCents}
+                                                onChange={(value) =>
+                                                    setGlobalLiveGuardrailsForm((prev) => ({
+                                                        ...prev,
+                                                        liveMaxWorseningSellCents: value,
+                                                    }))
+                                                }
+                                                suffix="cents"
+                                                helper="Blank = use base guardrail"
+                                                placeholder="inherit"
+                                            />
+                                            <Field
+                                                label="SELL Max Under Mid Override"
+                                                value={globalLiveGuardrailsForm.liveMaxUnderMidSellCents}
+                                                onChange={(value) =>
+                                                    setGlobalLiveGuardrailsForm((prev) => ({
+                                                        ...prev,
+                                                        liveMaxUnderMidSellCents: value,
+                                                    }))
+                                                }
+                                                suffix="cents"
+                                                helper="Blank = use base guardrail"
+                                                placeholder="inherit"
+                                            />
+                                        </div>
+                                    </div>
+                                ) : null}
                             </div>
 
+                                {configMode === "PAPER" ? (
                                 <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6 xl:col-start-2 xl:row-start-1">
                                     <div className="flex items-center justify-between gap-4">
                                         <div>
@@ -1046,6 +1524,7 @@ export default function ConfigPage() {
                                         </div>
                                     </div>
                                 </div>
+                                ) : null}
 
                                 <div className="bg-[#0D0D0D] rounded-2xl border border-[#27272A] p-6 xl:col-start-2 xl:row-start-2">
                                     <div className="flex items-center justify-between gap-4">
@@ -1602,7 +2081,7 @@ export default function ConfigPage() {
                                                 headers: { "Content-Type": "application/json" },
                                                 body: JSON.stringify({ action: "PAUSE" })
                                             })
-                                            mutate("/api/config/global")
+                                            mutate(globalConfigKey)
                                         }}
                                     >
                                         Pause Copy Engine
@@ -1615,7 +2094,7 @@ export default function ConfigPage() {
                                                 headers: { "Content-Type": "application/json" },
                                                 body: JSON.stringify({ action: "RESUME" })
                                             })
-                                            mutate("/api/config/global")
+                                            mutate(globalConfigKey)
                                         }}
                                     >
                                         Resume Copy Engine

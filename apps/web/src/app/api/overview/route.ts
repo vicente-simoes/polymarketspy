@@ -4,6 +4,7 @@ import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import prisma from "@/lib/prisma"
 import { getOrSetServerCache } from "@/lib/server-cache"
 import { withPgStatementTimeout } from "@/lib/pg-guardrails"
+import { TradingMode, PortfolioScope } from "@prisma/client"
 
 type RangeKey = "1H" | "1D" | "1W" | "1M" | "ALL"
 
@@ -75,6 +76,18 @@ function parseInitialBankrollMicros(valueJson: unknown): bigint {
     return BigInt(0)
 }
 
+function parseBooleanField(valueJson: unknown, field: string, fallback: boolean): boolean {
+    const raw = (valueJson as any)?.[field]
+    if (typeof raw === "boolean") return raw
+    if (typeof raw === "number" && Number.isFinite(raw)) return raw !== 0
+    if (typeof raw === "string") {
+        const normalized = raw.trim().toLowerCase()
+        if (normalized === "true" || normalized === "1" || normalized === "yes") return true
+        if (normalized === "false" || normalized === "0" || normalized === "no") return false
+    }
+    return fallback
+}
+
 export async function GET(request: NextRequest) {
     const session = await getServerSession(authOptions)
     if (!session) {
@@ -93,11 +106,16 @@ export async function GET(request: NextRequest) {
                         select: { valueJson: true }
                     }),
                     tx.globalPortfolioState.findUnique({
-                        where: { id: "EXEC_GLOBAL" },
+                        where: {
+                            tradingMode_portfolioScope: {
+                                tradingMode: TradingMode.PAPER,
+                                portfolioScope: PortfolioScope.EXEC_GLOBAL,
+                            },
+                        },
                         select: { cashMicros: true, contributedCapitalMicros: true }
                     }),
                     tx.currentPosition.findMany({
-                        where: { shareMicros: { not: BigInt(0) } },
+                        where: { tradingMode: TradingMode.PAPER, shareMicros: { not: BigInt(0) } },
                         select: { assetId: true, shareMicros: true, netCashFlowMicros: true }
                     }),
                     tx.systemCheckpoint.findUnique({
@@ -107,6 +125,14 @@ export async function GET(request: NextRequest) {
                 ])
 
                 const initialBankrollMicros = parseInitialBankrollMicros(systemConfigRow?.valueJson)
+                const copyEngineEnabled = parseBooleanField(systemConfigRow?.valueJson, "copyEngineEnabled", true)
+                const paperTradingEnabled = parseBooleanField(systemConfigRow?.valueJson, "paperTradingEnabled", true)
+                const liveTradingEnabled = parseBooleanField(systemConfigRow?.valueJson, "liveTradingEnabled", false)
+                const liveTradingReadOnlyEnabled = parseBooleanField(
+                    systemConfigRow?.valueJson,
+                    "liveTradingReadOnlyEnabled",
+                    false
+                )
                 const cashMicros = initialBankrollMicros + (globalState?.cashMicros ?? BigInt(0))
                 const contributedCapitalMicros =
                     initialBankrollMicros + (globalState?.contributedCapitalMicros ?? BigInt(0))
@@ -159,6 +185,7 @@ export async function GET(request: NextRequest) {
                 const MAX_POINTS = 800
                 const points = await tx.equityPoint.findMany({
                     where: {
+                        tradingMode: TradingMode.PAPER,
                         granularity,
                         bucketTime: { gte: startTime }
                     },
@@ -295,7 +322,13 @@ export async function GET(request: NextRequest) {
                     system: {
                         lastBlock: lastBlock?.valueJson ?? null,
                         lastEventTime: null,
-                        status: "healthy"
+                        status: "healthy",
+                        trading: {
+                            copyEngineEnabled,
+                            paperTradingEnabled,
+                            liveTradingEnabled,
+                            liveTradingReadOnlyEnabled,
+                        },
                     }
                 }
             })

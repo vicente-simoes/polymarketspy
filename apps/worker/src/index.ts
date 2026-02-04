@@ -20,6 +20,15 @@ import { loadResolvedTokensFromRedis, setRedisClient } from "./poly/index.js";
 import { stopBookService } from "./simulate/bookService.js";
 import { env } from "./config/env.js";
 import { startSettlementLoop, stopSettlementLoop } from "./settlement.js";
+import {
+    isLiveClientInitialized,
+    initializeLiveClient,
+    startUserChannel,
+    stopUserChannel,
+    startLiveReconciliation,
+    stopLiveReconciliation,
+} from "./live/index.js";
+import { getSystemConfig } from "./config/system.js";
 
 async function main() {
     logger.info("Worker starting...");
@@ -97,6 +106,59 @@ async function main() {
     // Start settlement loop (closes resolved positions and credits payout)
     startSettlementLoop();
 
+    // Live components control loop (start/stop without restart)
+    let liveComponentsRunning = false;
+    let liveControlInterval: NodeJS.Timeout | null = null;
+
+    const syncLiveComponentsFromConfig = async () => {
+        const systemConfig = await getSystemConfig();
+        const shouldRunLive =
+            systemConfig.liveTradingEnabled || systemConfig.liveTradingReadOnlyEnabled;
+
+        if (shouldRunLive && !liveComponentsRunning) {
+            const liveInitialized = await initializeLiveClient();
+            if (!liveInitialized) {
+                logger.info(
+                    {
+                        liveTradingEnabled: systemConfig.liveTradingEnabled,
+                        liveTradingReadOnlyEnabled: systemConfig.liveTradingReadOnlyEnabled,
+                    },
+                    "Live enabled but client init unavailable; skipping live startup"
+                );
+                return;
+            }
+
+            await startUserChannel();
+            await startLiveReconciliation();
+            liveComponentsRunning = true;
+
+            logger.info(
+                {
+                    liveTradingEnabled: systemConfig.liveTradingEnabled,
+                    liveTradingReadOnlyEnabled: systemConfig.liveTradingReadOnlyEnabled,
+                },
+                "Live components started"
+            );
+            return;
+        }
+
+        if (!shouldRunLive && liveComponentsRunning) {
+            stopLiveReconciliation();
+            stopUserChannel();
+            liveComponentsRunning = false;
+            logger.info("Live components stopped");
+        }
+    };
+
+    // Run once at startup, then periodically.
+    await syncLiveComponentsFromConfig();
+    liveControlInterval = setInterval(() => {
+        syncLiveComponentsFromConfig().catch((err) => {
+            logger.error({ err }, "Live control loop error");
+        });
+    }, 5_000);
+    liveControlInterval.unref?.();
+
     logger.info("Worker started successfully");
 
     // Graceful shutdown
@@ -115,6 +177,15 @@ async function main() {
         }
         // Stop CLOB book WebSocket and cache
         await stopBookService();
+        if (liveControlInterval) {
+            clearInterval(liveControlInterval);
+            liveControlInterval = null;
+        }
+        // Stop live trading components if initialized
+        if (isLiveClientInitialized()) {
+            stopLiveReconciliation();
+            stopUserChannel();
+        }
         await prisma.$disconnect();
         await redisConnection.quit();
         process.exit(0);

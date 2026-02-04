@@ -14,9 +14,14 @@ const DEFAULT_SYSTEM_CONFIG: SystemConfig = {
     backfillMinutes: 15,
     // Default bankroll: 0 (starts at 0 equity, positions add value, cash subtracts)
     initialBankrollMicros: 0,
+
+    // Paper/Live trading mode switches
+    paperTradingEnabled: true, // Paper trading enabled by default
+    liveTradingEnabled: false, // Live trading disabled by default (must be explicitly enabled)
+    liveTradingReadOnlyEnabled: false, // Live read-only disabled by default
 };
 
-const CACHE_TTL_MS = 30_000;
+const CACHE_TTL_MS = 5_000;
 
 let cache: { config: SystemConfig; loadedAt: number } | null = null;
 
@@ -46,4 +51,3 @@ export async function getSystemConfig(): Promise<SystemConfig> {
 export function clearSystemConfigCache(): void {
     cache = null;
 }
-

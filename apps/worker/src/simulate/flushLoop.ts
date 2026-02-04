@@ -13,7 +13,6 @@ import { TradeSide, CopyDecision, PortfolioScope } from "@prisma/client";
 import { ReasonCodes } from "@copybot/shared";
 import { createChildLogger } from "../log/logger.js";
 import { prisma } from "../db/prisma.js";
-import { queues } from "../queue/queues.js";
 import { getGlobalConfig } from "./config.js";
 import {
     scanAndFlushDueBuckets,
@@ -22,6 +21,7 @@ import {
     type FlushResult,
 } from "./smallTradeBuffer.js";
 import { type TradeEventGroup, serializeEventGroup } from "./types.js";
+import { enqueueTradeGroupToEnabledQueues } from "./enqueue.js";
 
 const logger = createChildLogger({ module: "flush-loop" });
 
@@ -136,6 +136,7 @@ async function recordSkippedFlush(bucket: Bucket, reason: string): Promise<void>
                 filledRatioBps: 0,
                 theirReferencePriceMicros: bucket.referencePriceMicros,
                 midPriceMicrosAtDecision: 0, // No book lookup for skipped flush
+                spreadMicrosAtDecision: null,
             },
         });
 
@@ -155,6 +156,7 @@ async function recordSkippedFlush(bucket: Bucket, reason: string): Promise<void>
 
 /**
  * Process a flush result by enqueueing for execution or recording skip.
+ * Routes to both paper and live queues based on system config and per-user overrides.
  */
 async function processFlushResult(result: FlushResult): Promise<void> {
     if (!result.executed) {
@@ -172,19 +174,24 @@ async function processFlushResult(result: FlushResult): Promise<void> {
         // Convert bucket to TradeEventGroup
         const group = bucketToTradeEventGroup(bucket);
         const queueGroup = serializeEventGroup(group);
+        if (queueGroup.type !== "trade") {
+            throw new Error(`Expected trade group for enqueue, got: ${queueGroup.type}`);
+        }
 
-        // Enqueue for copy attempt processing
-        await queues.copyAttemptGlobal.add("copy-attempt-global", {
-            group: queueGroup,
-            portfolioScope: "EXEC_GLOBAL",
-            sourceType: "BUFFER",
-            bufferedTradeCount: bucket.countTradesBuffered,
-        });
+        const enqueueResult = await enqueueTradeGroupToEnabledQueues(
+            queueGroup,
+            "BUFFER",
+            bucket.countTradesBuffered,
+            bucket.followedUserId,
+            log
+        );
 
         log.info(
             {
                 notional: bucket.netNotionalMicros.toString(),
                 tradesCount: bucket.countTradesBuffered,
+                paperEnqueued: enqueueResult.paperEnqueued,
+                liveEnqueued: enqueueResult.liveEnqueued,
             },
             "Buffer flush enqueued for execution"
         );

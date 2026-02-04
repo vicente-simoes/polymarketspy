@@ -4,6 +4,7 @@ import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import prisma from "@/lib/prisma"
 import { getOrSetServerCache } from "@/lib/server-cache"
 import { withPgStatementTimeout } from "@/lib/pg-guardrails"
+import { TradingMode, PortfolioScope } from "@prisma/client"
 
 const MICROS_PER_UNIT = BigInt(1_000_000)
 const DEFAULT_MARK_PRICE_MICROS = 500_000 // $0.50
@@ -37,7 +38,7 @@ export async function GET() {
         const payload = await getOrSetServerCache("portfolio:global", 10_000, async () => {
             return withPgStatementTimeout(4000, async (tx) => {
                 const guardrails = await tx.guardrailConfig.findFirst({
-                    where: { scope: "GLOBAL", followedUserId: null },
+                    where: { scope: "GLOBAL", tradingMode: TradingMode.PAPER, followedUserId: null },
                     orderBy: { updatedAt: "desc" }
                 })
                 const guardrailsConfig = (guardrails?.configJson || {}) as Record<string, any>
@@ -64,11 +65,16 @@ export async function GET() {
                         select: { valueJson: true }
                     }),
                     tx.globalPortfolioState.findUnique({
-                        where: { id: "EXEC_GLOBAL" },
+                        where: {
+                            tradingMode_portfolioScope: {
+                                tradingMode: TradingMode.PAPER,
+                                portfolioScope: PortfolioScope.EXEC_GLOBAL,
+                            },
+                        },
                         select: { cashMicros: true, contributedCapitalMicros: true }
                     }),
                     tx.currentPosition.findMany({
-                        where: { shareMicros: { not: BigInt(0) } },
+                        where: { tradingMode: TradingMode.PAPER, shareMicros: { not: BigInt(0) } },
                         select: {
                             assetId: true,
                             marketId: true,
@@ -77,11 +83,12 @@ export async function GET() {
                         }
                     }),
                     tx.currentPositionByLeader.findMany({
-                        where: { shareMicros: { not: BigInt(0) } },
+                        where: { tradingMode: TradingMode.PAPER, shareMicros: { not: BigInt(0) } },
                         select: { followedUserId: true, assetId: true, shareMicros: true }
                     }),
                     tx.equityPoint.findMany({
                         where: {
+                            tradingMode: TradingMode.PAPER,
                             granularity: "H12",
                             bucketTime: { gte: thirtyDaysAgo }
                         },

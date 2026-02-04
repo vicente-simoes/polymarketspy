@@ -8,6 +8,12 @@ import { getBookServiceStats } from "../simulate/bookService.js";
 import { getGlobalConfig } from "../simulate/config.js";
 import { getBufferStats } from "../simulate/smallTradeBuffer.js";
 import type { SmallTradeNettingModeType } from "@copybot/shared";
+import {
+    isLiveClientInitialized,
+    getReconciliationHealth,
+    type ReconciliationHealth,
+} from "../live/index.js";
+import { getUserChannelMetrics, isUserChannelConnected } from "../live/userChannelWs.js";
 
 interface LatencyMetrics {
     p50Ms: number;
@@ -65,6 +71,33 @@ interface SmallTradeBufferingHealth {
     };
 }
 
+/**
+ * Live trading reconciliation health.
+ */
+interface LiveReconciliationHealth {
+    enabled: boolean;
+    isHealthy: boolean;
+    isInitialized: boolean;
+    lastOrderReconcileAt: string | null;
+    lastStateReconcileAt: string | null;
+    orderReconcileErrorCount: number;
+    stateReconcileErrorCount: number;
+    submissionUnknownCount: number;
+    unresolvedOrderIds: string[];
+}
+
+interface UserChannelHealth {
+    enabled: boolean;
+    connected: boolean;
+    lastConnectedAt: string | null;
+    lastMessageAt: string | null;
+    messageCount: number;
+    orderUpdateCount: number;
+    tradeUpdateCount: number;
+    errorCount: number;
+    orphanBufferSize: number;
+}
+
 interface HealthStatus {
     status: "ok" | "degraded" | "unhealthy";
     timestamp: string;
@@ -72,6 +105,8 @@ interface HealthStatus {
     alchemyWsConnected: boolean;
     clobBook: ClobBookMetrics;
     smallTradeBuffering: SmallTradeBufferingHealth;
+    liveReconciliation: LiveReconciliationHealth;
+    userChannel: UserChannelHealth;
     queueDepths: Record<string, number>;
     dbConnected: boolean;
     reconcile: ReconcileMetrics;
@@ -154,11 +189,74 @@ async function getHealthStatus(): Promise<HealthStatus> {
         },
     };
 
+    // Get live trading reconciliation health
+    const liveEnabled = isLiveClientInitialized();
+    let liveReconciliation: LiveReconciliationHealth;
+    let userChannel: UserChannelHealth;
+
+    if (liveEnabled) {
+        const reconHealth = getReconciliationHealth();
+        liveReconciliation = {
+            enabled: true,
+            isHealthy: reconHealth.isHealthy,
+            isInitialized: reconHealth.isInitialized,
+            lastOrderReconcileAt: reconHealth.lastOrderReconcileAt?.toISOString() ?? null,
+            lastStateReconcileAt: reconHealth.lastStateReconcileAt?.toISOString() ?? null,
+            orderReconcileErrorCount: reconHealth.orderReconcileErrorCount,
+            stateReconcileErrorCount: reconHealth.stateReconcileErrorCount,
+            submissionUnknownCount: reconHealth.submissionUnknownCount,
+            unresolvedOrderIds: reconHealth.unresolvedOrderIds,
+        };
+
+        const userMetrics = getUserChannelMetrics();
+        userChannel = {
+            enabled: true,
+            connected: isUserChannelConnected(),
+            lastConnectedAt: userMetrics.lastConnectedAt
+                ? new Date(userMetrics.lastConnectedAt).toISOString()
+                : null,
+            lastMessageAt: userMetrics.lastMessageAt
+                ? new Date(userMetrics.lastMessageAt).toISOString()
+                : null,
+            messageCount: userMetrics.messageCount,
+            orderUpdateCount: userMetrics.orderUpdateCount,
+            tradeUpdateCount: userMetrics.tradeUpdateCount,
+            errorCount: userMetrics.errorCount,
+            orphanBufferSize: userMetrics.orphanBufferSize,
+        };
+    } else {
+        liveReconciliation = {
+            enabled: false,
+            isHealthy: true,
+            isInitialized: false,
+            lastOrderReconcileAt: null,
+            lastStateReconcileAt: null,
+            orderReconcileErrorCount: 0,
+            stateReconcileErrorCount: 0,
+            submissionUnknownCount: 0,
+            unresolvedOrderIds: [],
+        };
+
+        userChannel = {
+            enabled: false,
+            connected: false,
+            lastConnectedAt: null,
+            lastMessageAt: null,
+            messageCount: 0,
+            orderUpdateCount: 0,
+            tradeUpdateCount: 0,
+            errorCount: 0,
+            orphanBufferSize: 0,
+        };
+    }
+
     // Determine overall status
     let status: "ok" | "degraded" | "unhealthy" = "ok";
     if (!dbConnected) {
         status = "unhealthy";
     } else if (!alchemyWsConnected) {
+        status = "degraded";
+    } else if (liveEnabled && !liveReconciliation.isHealthy) {
         status = "degraded";
     }
 
@@ -169,6 +267,8 @@ async function getHealthStatus(): Promise<HealthStatus> {
         alchemyWsConnected,
         clobBook,
         smallTradeBuffering,
+        liveReconciliation,
+        userChannel,
         queueDepths,
         dbConnected,
         reconcile,

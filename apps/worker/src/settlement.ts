@@ -117,7 +117,9 @@ async function settleResolvedPositionsOnce(): Promise<void> {
                         portfolioScope: PortfolioScope.EXEC_GLOBAL,
                         followedUserId: position.followedUserId,
                         marketId: position.marketId,
-                        assetId: null,
+                        // Attribute settlement cash to the same asset so per-asset and per-leader caches
+                        // stay consistent (older rows used assetId=null and require API-side backfill).
+                        assetId: position.assetId,
                         entryType: LedgerEntryType.SETTLEMENT,
                         shareDeltaMicros: BigInt(0),
                         cashDeltaMicros,

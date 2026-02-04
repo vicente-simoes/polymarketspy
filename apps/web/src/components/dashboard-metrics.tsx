@@ -29,6 +29,15 @@ export function DashboardMetrics() {
   const maxDrawdown = data?.analytics?.maxDrawdown || 0
   const totalClosed = data?.analytics?.totalClosedPositions || 0
 
+  const trading = data?.system?.trading
+  const copyEngineEnabled = trading?.copyEngineEnabled ?? true
+  const paperTradingEnabled = trading?.paperTradingEnabled ?? true
+  const liveTradingEnabled = trading?.liveTradingEnabled ?? false
+  const liveTradingReadOnlyEnabled = trading?.liveTradingReadOnlyEnabled ?? false
+
+  const liveLabel = liveTradingEnabled ? "ON" : liveTradingReadOnlyEnabled ? "READ-ONLY" : "OFF"
+  const engineLabel = copyEngineEnabled ? "ENGINE ON" : "ENGINE OFF"
+
   return (
     <div className="flex flex-col xl:flex-row gap-6 md:gap-8 xl:items-center justify-between p-4 md:p-6 bg-[#0D0D0D] rounded-2xl">
       <div className="flex flex-col gap-2">
@@ -41,7 +50,7 @@ export function DashboardMetrics() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-6 md:gap-8 xl:gap-16">
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-6 md:gap-8 xl:gap-16">
         <div className="flex flex-col gap-1">
           <span className="text-gray-400 text-sm">Exposure</span>
           <span className="text-2xl md:text-xl lg:text-2xl font-semibold text-white">
@@ -64,6 +73,15 @@ export function DashboardMetrics() {
           <span className="text-gray-400 text-sm">Max Drawdown</span>
           <span className="text-2xl md:text-xl lg:text-2xl font-semibold text-red-400">
             -{maxDrawdown.toFixed(2)}%
+          </span>
+        </div>
+        <div className="flex flex-col gap-1">
+          <span className="text-gray-400 text-sm">Trading</span>
+          <span className={`text-2xl md:text-xl lg:text-2xl font-semibold ${copyEngineEnabled ? 'text-white' : 'text-red-400'}`}>
+            {engineLabel}
+          </span>
+          <span className="text-xs text-gray-500">
+            Paper: {paperTradingEnabled ? "ON" : "OFF"} · Live: {liveLabel}
           </span>
         </div>
       </div>

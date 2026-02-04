@@ -8,12 +8,17 @@
  * - Computes copy notional for the trade
  * - If >= threshold: executes immediately (bypasses aggregator)
  * - If < threshold: buffers in small trade buffer for batching
+ *
+ * Routing for parallel paper + live execution:
+ * - Paper ON, Live OFF -> paper queue only
+ * - Paper OFF, Live ON -> live queue only
+ * - Paper ON, Live ON -> both queues (parallel execution)
  */
 
-import { TradeSide, ActivityType } from "@prisma/client";
+import { TradeSide, ActivityType, TradingMode } from "@prisma/client";
 import { prisma } from "../db/prisma.js";
 import { createChildLogger } from "../log/logger.js";
-import { createWorker, QUEUE_NAMES, queues } from "../queue/queues.js";
+import { createWorker, QUEUE_NAMES } from "../queue/queues.js";
 import { addTradeToAggregator, addActivityToAggregator } from "./aggregator.js";
 import {
     type GroupJobData,
@@ -31,6 +36,7 @@ import { getGlobalConfig, getUserConfig } from "./config.js";
 import { appendTrade, mergeAndFlushBucket, type BufferTradeInput } from "./smallTradeBuffer.js";
 import { bucketToTradeEventGroup } from "./flushLoop.js";
 import { computeTargetShares, computeRawTargetNotional } from "./sizing.js";
+import { enqueueTradeGroupToEnabledQueues } from "./enqueue.js";
 
 const logger = createChildLogger({ module: "group-events-processor" });
 
@@ -65,8 +71,10 @@ function createSingleTradeGroup(
     trade: PendingTradeEvent,
     tokenId: string
 ): TradeEventGroup {
-    const windowStart = new Date();
-    const groupKey = `${trade.followedUserId}:${tokenId}:${trade.side}:${windowStart.toISOString()}`;
+    const windowStart = trade.detectTime;
+    const groupKey =
+        `${trade.followedUserId}:${tokenId}:${trade.side}:${windowStart.toISOString()}` +
+        `:immediate:${trade.tradeEventId}`;
 
     // VWAP for single trade is just the trade price
     const vwapPriceMicros = trade.priceMicros;
@@ -148,7 +156,7 @@ async function processTradeForAggregation(
     };
 
     // Load per-user config to check if buffering is enabled and get sizing mode
-    const { sizing, smallTradeBuffering } = await getUserConfig(followedUserId);
+    const { sizing, smallTradeBuffering } = await getUserConfig(TradingMode.PAPER, followedUserId);
 
     // If buffering is disabled, use existing aggregator
     if (!smallTradeBuffering.enabled) {
@@ -203,12 +211,18 @@ async function processTradeForAggregation(
             const group = bucketToTradeEventGroup(mergeResult.bucket);
             const queueGroup = serializeEventGroup(group);
 
-            await queues.copyAttemptGlobal.add("copy-attempt-global", {
-                group: queueGroup,
-                portfolioScope: "EXEC_GLOBAL",
-                sourceType: "BUFFER",
-                bufferedTradeCount: mergeResult.bucket.countTradesBuffered,
-            });
+            // Route to paper and/or live queues
+            if (queueGroup.type !== "trade") {
+                throw new Error(`Expected trade group for enqueue, got: ${queueGroup.type}`);
+            }
+
+            await enqueueTradeGroupToEnabledQueues(
+                queueGroup,
+                "BUFFER",
+                mergeResult.bucket.countTradesBuffered,
+                followedUserId,
+                log
+            );
 
             return;
         }
@@ -223,12 +237,18 @@ async function processTradeForAggregation(
         const group = createSingleTradeGroup(pendingEvent, effectiveTokenId);
         const queueGroup = serializeEventGroup(group);
 
-        await queues.copyAttemptGlobal.add("copy-attempt-global", {
-            group: queueGroup,
-            portfolioScope: "EXEC_GLOBAL",
-            sourceType: "IMMEDIATE",
-            bufferedTradeCount: 1,
-        });
+        // Route to paper and/or live queues
+        if (queueGroup.type !== "trade") {
+            throw new Error(`Expected trade group for enqueue, got: ${queueGroup.type}`);
+        }
+
+        await enqueueTradeGroupToEnabledQueues(
+            queueGroup,
+            "IMMEDIATE",
+            1,
+            followedUserId,
+            log
+        );
 
         return;
     }

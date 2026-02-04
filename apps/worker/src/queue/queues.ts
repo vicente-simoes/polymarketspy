@@ -22,6 +22,7 @@ export const QUEUE_NAMES = {
     GROUP_EVENTS: "q_group_events",
     COPY_ATTEMPT_USER: "q_copy_attempt_user",
     COPY_ATTEMPT_GLOBAL: "q_copy_attempt_global",
+    COPY_ATTEMPT_LIVE: "q_copy_attempt_live",
     RECONCILE: "q_reconcile",
     PRICES: "q_prices",
 } as const;
@@ -68,6 +69,7 @@ export function createWorker<T>(
             [QUEUE_NAMES.INGEST_EVENTS]: env.WORKER_CONCURRENCY_INGEST ?? 2,
             [QUEUE_NAMES.GROUP_EVENTS]: env.WORKER_CONCURRENCY_GROUP ?? 1,
             [QUEUE_NAMES.COPY_ATTEMPT_GLOBAL]: env.WORKER_CONCURRENCY_COPY_GLOBAL ?? 1,
+            [QUEUE_NAMES.COPY_ATTEMPT_LIVE]: 1, // Serialized per wallet for safety
             [QUEUE_NAMES.RECONCILE]: env.WORKER_CONCURRENCY_RECONCILE ?? 1,
             [QUEUE_NAMES.PRICES]: env.WORKER_CONCURRENCY_PRICES ?? 1,
         };
@@ -112,6 +114,7 @@ export const queues = {
     groupEvents: createQueue(QUEUE_NAMES.GROUP_EVENTS),
     copyAttemptUser: createQueue(QUEUE_NAMES.COPY_ATTEMPT_USER),
     copyAttemptGlobal: createQueue(QUEUE_NAMES.COPY_ATTEMPT_GLOBAL),
+    copyAttemptLive: createQueue(QUEUE_NAMES.COPY_ATTEMPT_LIVE),
     reconcile: createQueue(QUEUE_NAMES.RECONCILE),
     prices: createQueue(QUEUE_NAMES.PRICES),
 };

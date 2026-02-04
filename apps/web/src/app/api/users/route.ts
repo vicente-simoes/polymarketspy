@@ -24,8 +24,9 @@ export async function GET() {
 
         const userIds = users.map((u: { id: string }) => u.id)
 
-        // Shadow portfolios are removed. Show current *attributed* (per-leader) equity using caches:
-        // CurrentPositionByLeader + CurrentPrice.
+        // Shadow portfolios are removed. Show current *attributed* (per-leader) equity.
+        // This comes primarily from per-leader position caches, plus any cash-only ledger entries
+        // (historical settlement payouts were written with assetId=null and are not reflected in caches).
         const leaderRows = userIds.length
             ? await prisma.currentPositionByLeader.findMany({
                   where: { followedUserId: { in: userIds } },
@@ -35,6 +36,20 @@ export async function GET() {
                       shareMicros: true,
                       netCashFlowMicros: true
                   }
+              })
+            : []
+
+        const cashOnlyRows = userIds.length
+            ? await prisma.ledgerEntry.groupBy({
+                  by: ["followedUserId"],
+                  where: {
+                      portfolioScope: "EXEC_GLOBAL",
+                      followedUserId: { in: userIds },
+                      assetId: null,
+                  },
+                  _sum: {
+                      cashDeltaMicros: true,
+                  },
               })
             : []
 
@@ -58,10 +73,20 @@ export async function GET() {
         const MICROS_PER_UNIT = BigInt(1_000_000)
         const DEFAULT_MARK_PRICE_MICROS = 500_000 // $0.50
 
-        const metricsByUser = new Map<
-            string,
-            { equityMicros: bigint; realizedMicros: bigint }
-        >()
+        const metricsByUser = new Map<string, { equityMicros: bigint; realizedMicros: bigint }>()
+
+        for (const row of cashOnlyRows) {
+            if (!row.followedUserId) continue
+            const current = metricsByUser.get(row.followedUserId) ?? {
+                equityMicros: BigInt(0),
+                realizedMicros: BigInt(0)
+            }
+            const cashDelta = row._sum.cashDeltaMicros ?? BigInt(0)
+            current.equityMicros += cashDelta
+            // Treat cash-only attribution as realized (no remaining position).
+            current.realizedMicros += cashDelta
+            metricsByUser.set(row.followedUserId, current)
+        }
 
         for (const row of leaderRows) {
             const current = metricsByUser.get(row.followedUserId) ?? {

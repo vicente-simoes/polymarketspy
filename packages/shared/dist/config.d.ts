@@ -69,6 +69,93 @@ export declare const GuardrailsSchema: z.ZodObject<{
 }>;
 export type Guardrails = z.infer<typeof GuardrailsSchema>;
 /**
+ * Live order type for copy trading execution.
+ * - FAK: Fill-And-Kill (default) - immediate partials allowed, remainder cancels
+ * - FOK: Fill-Or-Kill - all or nothing execution
+ * - GTC: Good-Til-Canceled - resting order (not used in MVP)
+ */
+export declare const LiveOrderType: {
+    readonly FAK: "FAK";
+    readonly FOK: "FOK";
+    readonly GTC: "GTC";
+};
+export type LiveOrderTypeValue = (typeof LiveOrderType)[keyof typeof LiveOrderType];
+/**
+ * Live-specific guardrails configuration schema.
+ * These extend the base guardrails for live trading mode.
+ * All values use basis points (bps) or micros for precision.
+ */
+export declare const LiveGuardrailsSchema: z.ZodObject<{
+    /**
+     * Slippage tolerance for BUY orders in bps.
+     * Order price = bestAsk * (1 + liveSlippageBpsBuy / 10000)
+     * Default: 50 = 0.50%
+     */
+    liveSlippageBpsBuy: z.ZodDefault<z.ZodNumber>;
+    /**
+     * Slippage tolerance for SELL orders in bps.
+     * Order price = bestBid * (1 - liveSlippageBpsSell / 10000)
+     * Can be set higher than BUY to avoid missing exits.
+     * Default: 100 = 1.00%
+     */
+    liveSlippageBpsSell: z.ZodDefault<z.ZodNumber>;
+    /**
+     * Maximum acceptable book age in ms.
+     * If the book is older than this, wait or SKIP.
+     * Default: 2000ms
+     */
+    liveBookFreshnessMs: z.ZodDefault<z.ZodNumber>;
+    /**
+     * Time to wait for a fresh book before giving up (ms).
+     * If WS book is stale, wait this long before SKIP or REST fallback.
+     * Default: 500ms
+     */
+    liveBookWaitMs: z.ZodDefault<z.ZodNumber>;
+    /**
+     * Default order type for live copy trading.
+     * Default: FAK (Fill-And-Kill)
+     */
+    liveOrderType: z.ZodDefault<z.ZodEnum<["FAK", "FOK", "GTC"]>>;
+    /**
+     * Whether to use FOK for correction/reconciliation orders.
+     * Default: false
+     */
+    useFokForCorrections: z.ZodDefault<z.ZodBoolean>;
+    /**
+     * Override maxWorseningVsTheirFillMicros for SELL orders in live mode.
+     * Allows more tolerance on exits to avoid missing leader sells.
+     * If not set, uses the base guardrail value.
+     * Default: undefined (use base guardrail)
+     */
+    liveMaxWorseningSellMicros: z.ZodOptional<z.ZodNumber>;
+    /**
+     * Override maxOverMidMicros for SELL orders in live mode.
+     * Allows selling further below mid to ensure exits.
+     * If not set, uses the base guardrail value.
+     * Default: undefined (use base guardrail)
+     */
+    liveMaxUnderMidSellMicros: z.ZodOptional<z.ZodNumber>;
+}, "strip", z.ZodTypeAny, {
+    liveSlippageBpsBuy: number;
+    liveSlippageBpsSell: number;
+    liveBookFreshnessMs: number;
+    liveBookWaitMs: number;
+    liveOrderType: "FAK" | "FOK" | "GTC";
+    useFokForCorrections: boolean;
+    liveMaxWorseningSellMicros?: number | undefined;
+    liveMaxUnderMidSellMicros?: number | undefined;
+}, {
+    liveSlippageBpsBuy?: number | undefined;
+    liveSlippageBpsSell?: number | undefined;
+    liveBookFreshnessMs?: number | undefined;
+    liveBookWaitMs?: number | undefined;
+    liveOrderType?: "FAK" | "FOK" | "GTC" | undefined;
+    useFokForCorrections?: boolean | undefined;
+    liveMaxWorseningSellMicros?: number | undefined;
+    liveMaxUnderMidSellMicros?: number | undefined;
+}>;
+export type LiveGuardrails = z.infer<typeof LiveGuardrailsSchema>;
+/**
  * Sizing mode for copy trading.
  * - fixedRate: Use a fixed copy percentage (current behavior)
  * - budgetedDynamic: Compute rate from budget / leader exposure
@@ -286,18 +373,44 @@ export declare const SystemConfigSchema: z.ZodObject<{
     backfillMinutes: z.ZodDefault<z.ZodNumber>;
     /** Initial paper trading bankroll in micros (default: 10000_000_000 = $10,000) */
     initialBankrollMicros: z.ZodDefault<z.ZodNumber>;
+    /**
+     * Whether paper trading (simulation) is enabled.
+     * When true, paper copy attempts are generated and simulated fills recorded.
+     * Default: true
+     */
+    paperTradingEnabled: z.ZodDefault<z.ZodBoolean>;
+    /**
+     * Whether live trading (real orders) is enabled.
+     * When true, live copy attempts place real CLOB orders.
+     * Default: false (must be explicitly enabled)
+     */
+    liveTradingEnabled: z.ZodDefault<z.ZodBoolean>;
+    /**
+     * Whether live trading read-only mode is enabled.
+     * When true, live portfolio monitoring (positions/cash reconciliation)
+     * runs even if liveTradingEnabled=false.
+     * Useful for monitoring wallet state without placing orders.
+     * Default: false
+     */
+    liveTradingReadOnlyEnabled: z.ZodDefault<z.ZodBoolean>;
 }, "strip", z.ZodTypeAny, {
     copyEngineEnabled: boolean;
     aggregationWindowMs: number;
     pollingIntervalMs: number;
     backfillMinutes: number;
     initialBankrollMicros: number;
+    paperTradingEnabled: boolean;
+    liveTradingEnabled: boolean;
+    liveTradingReadOnlyEnabled: boolean;
 }, {
     copyEngineEnabled?: boolean | undefined;
     aggregationWindowMs?: number | undefined;
     pollingIntervalMs?: number | undefined;
     backfillMinutes?: number | undefined;
     initialBankrollMicros?: number | undefined;
+    paperTradingEnabled?: boolean | undefined;
+    liveTradingEnabled?: boolean | undefined;
+    liveTradingReadOnlyEnabled?: boolean | undefined;
 }>;
 export type SystemConfig = z.infer<typeof SystemConfigSchema>;
 /**

@@ -8,7 +8,7 @@
  * - Risk caps (exposure limits, circuit breakers)
  */
 
-import { TradeSide, PortfolioScope } from "@prisma/client";
+import { TradeSide, PortfolioScope, TradingMode } from "@prisma/client";
 import { ReasonCodes, type ReasonCode, type Guardrails } from "@copybot/shared";
 import { prisma } from "../db/prisma.js";
 import { createChildLogger } from "../log/logger.js";
@@ -292,6 +292,7 @@ export function checkExposureCaps(
  * Detect if a trade is reducing exposure (closing/reducing a position).
  */
 export async function isReducingExposure(
+    tradingMode: TradingMode,
     portfolioScope: PortfolioScope,
     followedUserId: string | null,
     assetId: string,
@@ -300,6 +301,7 @@ export async function isReducingExposure(
     // Get current position
     const result = await prisma.ledgerEntry.aggregate({
         where: {
+            tradingMode,
             portfolioScope,
             ...(portfolioScope === PortfolioScope.EXEC_GLOBAL ? {} : { followedUserId }),
             assetId,
@@ -380,6 +382,7 @@ export async function runAllGuardrailChecks(
 
     // 4. Circuit breakers (skip if reducing exposure)
     const isReducing = await isReducingExposure(
+        TradingMode.PAPER,
         scope === "GLOBAL" ? PortfolioScope.EXEC_GLOBAL : PortfolioScope.EXEC_USER,
         followedUserId,
         simulation.targetShareMicros > BigInt(0) ? "" : "", // We'd need assetId here

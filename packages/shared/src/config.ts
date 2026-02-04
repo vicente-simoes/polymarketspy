@@ -49,6 +49,88 @@ export const GuardrailsSchema = z.object({
 export type Guardrails = z.infer<typeof GuardrailsSchema>;
 
 /**
+ * Live order type for copy trading execution.
+ * - FAK: Fill-And-Kill (default) - immediate partials allowed, remainder cancels
+ * - FOK: Fill-Or-Kill - all or nothing execution
+ * - GTC: Good-Til-Canceled - resting order (not used in MVP)
+ */
+export const LiveOrderType = {
+    FAK: "FAK",
+    FOK: "FOK",
+    GTC: "GTC",
+} as const;
+
+export type LiveOrderTypeValue = (typeof LiveOrderType)[keyof typeof LiveOrderType];
+
+/**
+ * Live-specific guardrails configuration schema.
+ * These extend the base guardrails for live trading mode.
+ * All values use basis points (bps) or micros for precision.
+ */
+export const LiveGuardrailsSchema = z.object({
+    /**
+     * Slippage tolerance for BUY orders in bps.
+     * Order price = bestAsk * (1 + liveSlippageBpsBuy / 10000)
+     * Default: 50 = 0.50%
+     */
+    liveSlippageBpsBuy: z.number().int().min(0).default(50),
+
+    /**
+     * Slippage tolerance for SELL orders in bps.
+     * Order price = bestBid * (1 - liveSlippageBpsSell / 10000)
+     * Can be set higher than BUY to avoid missing exits.
+     * Default: 100 = 1.00%
+     */
+    liveSlippageBpsSell: z.number().int().min(0).default(100),
+
+    /**
+     * Maximum acceptable book age in ms.
+     * If the book is older than this, wait or SKIP.
+     * Default: 2000ms
+     */
+    liveBookFreshnessMs: z.number().int().min(100).default(2000),
+
+    /**
+     * Time to wait for a fresh book before giving up (ms).
+     * If WS book is stale, wait this long before SKIP or REST fallback.
+     * Default: 500ms
+     */
+    liveBookWaitMs: z.number().int().min(0).default(500),
+
+    /**
+     * Default order type for live copy trading.
+     * Default: FAK (Fill-And-Kill)
+     */
+    liveOrderType: z
+        .enum([LiveOrderType.FAK, LiveOrderType.FOK, LiveOrderType.GTC])
+        .default(LiveOrderType.FAK),
+
+    /**
+     * Whether to use FOK for correction/reconciliation orders.
+     * Default: false
+     */
+    useFokForCorrections: z.boolean().default(false),
+
+    /**
+     * Override maxWorseningVsTheirFillMicros for SELL orders in live mode.
+     * Allows more tolerance on exits to avoid missing leader sells.
+     * If not set, uses the base guardrail value.
+     * Default: undefined (use base guardrail)
+     */
+    liveMaxWorseningSellMicros: z.number().int().min(0).optional(),
+
+    /**
+     * Override maxOverMidMicros for SELL orders in live mode.
+     * Allows selling further below mid to ensure exits.
+     * If not set, uses the base guardrail value.
+     * Default: undefined (use base guardrail)
+     */
+    liveMaxUnderMidSellMicros: z.number().int().min(0).optional(),
+});
+
+export type LiveGuardrails = z.infer<typeof LiveGuardrailsSchema>;
+
+/**
  * Sizing mode for copy trading.
  * - fixedRate: Use a fixed copy percentage (current behavior)
  * - budgetedDynamic: Compute rate from budget / leader exposure
@@ -171,6 +253,31 @@ export const SystemConfigSchema = z.object({
     backfillMinutes: z.number().int().default(15),
     /** Initial paper trading bankroll in micros (default: 10000_000_000 = $10,000) */
     initialBankrollMicros: z.number().int().default(10_000_000_000),
+
+    // ─── Paper/Live Trading Mode Switches ─────────────────────────────────────
+
+    /**
+     * Whether paper trading (simulation) is enabled.
+     * When true, paper copy attempts are generated and simulated fills recorded.
+     * Default: true
+     */
+    paperTradingEnabled: z.boolean().default(true),
+
+    /**
+     * Whether live trading (real orders) is enabled.
+     * When true, live copy attempts place real CLOB orders.
+     * Default: false (must be explicitly enabled)
+     */
+    liveTradingEnabled: z.boolean().default(false),
+
+    /**
+     * Whether live trading read-only mode is enabled.
+     * When true, live portfolio monitoring (positions/cash reconciliation)
+     * runs even if liveTradingEnabled=false.
+     * Useful for monitoring wallet state without placing orders.
+     * Default: false
+     */
+    liveTradingReadOnlyEnabled: z.boolean().default(false),
 });
 
 export type SystemConfig = z.infer<typeof SystemConfigSchema>;
