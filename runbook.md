@@ -66,6 +66,11 @@ pass:polymarket-bot
 
 pass (inside): jocavice
 
+git fetch origin
+
+git switch -c actual-live-trading --track origin/actual-live-trading
+
+
 docker exec -it polymarket-db psql -U copybot -d copybot -c \
 "INSERT INTO \"AllowedAdminEmail\" (\"id\",\"email\")
  VALUES (gen_random_uuid(), 'vicente.pt.simoes@gmail.com')
