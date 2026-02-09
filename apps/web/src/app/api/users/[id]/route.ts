@@ -42,7 +42,8 @@ export async function GET(
             skipAttempts,
             recentTrades,
             recentAttempts,
-            leaderPositions
+            leaderPositions,
+            cashOnlyAgg
         ] = await Promise.all([
             prisma.copyAttempt.count({
                 where: { followedUserId: id, portfolioScope: "EXEC_GLOBAL" }
@@ -127,6 +128,14 @@ export async function GET(
                     shareMicros: true,
                     netCashFlowMicros: true
                 }
+            }),
+            prisma.ledgerEntry.aggregate({
+                where: {
+                    portfolioScope: "EXEC_GLOBAL",
+                    followedUserId: id,
+                    assetId: null,
+                },
+                _sum: { cashDeltaMicros: true }
             })
         ])
 
@@ -241,6 +250,10 @@ export async function GET(
         let execEquityMicros = BigInt(0)
         let execRealizedPnlMicros = BigInt(0)
         let execExposureMicros = BigInt(0)
+
+        const cashOnlyDeltaMicros = cashOnlyAgg._sum.cashDeltaMicros ?? BigInt(0)
+        execEquityMicros += cashOnlyDeltaMicros
+        execRealizedPnlMicros += cashOnlyDeltaMicros
 
         for (const row of leaderPositions) {
             let marketValueMicros = BigInt(0)

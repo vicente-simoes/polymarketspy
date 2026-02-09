@@ -1,13 +1,14 @@
-import { EquityPointGranularity } from "@prisma/client";
+import { EquityPointGranularity, TradingMode, PortfolioScope } from "@prisma/client";
 import { prisma } from "../db/prisma.js";
 import { createChildLogger } from "../log/logger.js";
 import { getSystemConfig } from "../config/system.js";
-import { computeEquityAndPnlMicros, getBucketMs, isWithinBoundaryWindow } from "./equityMath.js";
+import { getBucketMs, isWithinBoundaryWindow } from "./equityMath.js";
 import { EQUITY_BOUNDARY_WINDOW_MS, EQUITY_GRANULARITIES, EQUITY_TICK_INTERVAL_MS } from "./equityPolicy.js";
 
 const logger = createChildLogger({ module: "equity-points" });
 
 const DEFAULT_MARK_PRICE_MICROS = 500_000; // $0.50
+const LIVE_BASELINE_EQUITY_KEY = "live:baselineEquityMicros";
 
 const GRANULARITIES = EQUITY_GRANULARITIES;
 
@@ -16,31 +17,66 @@ let equityTickInterval: ReturnType<typeof setInterval> | null = null;
 let retentionTimeout: ReturnType<typeof setTimeout> | null = null;
 let retentionInterval: ReturnType<typeof setInterval> | null = null;
 let tickInFlight = false;
-const lastBucketMsByGranularity = new Map<EquityPointGranularity, number>();
+const lastBucketMsByModeGranularity = new Map<string, number>();
 
 function getBucketTime(timestampMs: number, intervalMs: number): Date {
     return new Date(getBucketMs(timestampMs, intervalMs));
 }
 
-async function computeEquitySnapshot(): Promise<{
+function parseBaselineEquityMicros(valueJson: unknown): bigint | null {
+    const raw = (valueJson as any)?.equityMicros;
+    if (typeof raw === "number" && Number.isFinite(raw)) {
+        return BigInt(Math.trunc(raw));
+    }
+    if (typeof raw === "string" && /^[0-9]+$/.test(raw)) {
+        try {
+            return BigInt(raw);
+        } catch {
+            return null;
+        }
+    }
+    return null;
+}
+
+async function getLiveBaselineEquityMicros(): Promise<bigint | null> {
+    const row = await prisma.systemCheckpoint.findUnique({
+        where: { key: LIVE_BASELINE_EQUITY_KEY },
+        select: { valueJson: true },
+    });
+    if (!row) return null;
+    return parseBaselineEquityMicros(row.valueJson);
+}
+
+async function computeEquitySnapshot(tradingMode: TradingMode): Promise<{
     equityMicros: bigint;
     contributedCapitalMicros: bigint;
     pnlMicros: bigint;
     positionCount: number;
 }> {
-    const system = await getSystemConfig();
-    const initialBankrollMicros = BigInt(system.initialBankrollMicros);
+    const initialBankrollMicros =
+        tradingMode === TradingMode.PAPER
+            ? BigInt((await getSystemConfig()).initialBankrollMicros)
+            : 0n;
+
+    const liveBaselineEquityMicros =
+        tradingMode === TradingMode.LIVE ? await getLiveBaselineEquityMicros() : null;
 
     const state = await prisma.globalPortfolioState.findUnique({
-        where: { id: "EXEC_GLOBAL" },
+        where: {
+            tradingMode_portfolioScope: {
+                tradingMode,
+                portfolioScope: PortfolioScope.EXEC_GLOBAL,
+            },
+        },
         select: { cashMicros: true, contributedCapitalMicros: true },
     });
 
     const stateCashMicros = state?.cashMicros ?? 0n;
-    const stateContributedCapitalMicros = state?.contributedCapitalMicros ?? 0n;
+    const paperContributedCapitalMicros =
+        tradingMode === TradingMode.PAPER ? state?.contributedCapitalMicros ?? 0n : 0n;
 
     const positions = await prisma.currentPosition.findMany({
-        where: { shareMicros: { not: 0n } },
+        where: { tradingMode, shareMicros: { not: 0n } },
         select: { assetId: true, shareMicros: true },
     });
 
@@ -56,19 +92,26 @@ async function computeEquitySnapshot(): Promise<{
         prices.map((row) => [row.assetId, row.midpointPriceMicros])
     );
 
-    const computed = computeEquityAndPnlMicros({
-        initialBankrollMicros,
-        stateCashMicros,
-        stateContributedCapitalMicros,
-        positions,
-        priceByAsset,
-        defaultMarkPriceMicros: DEFAULT_MARK_PRICE_MICROS,
-    });
+    let totalPositionValueMicros = 0n;
+    for (const pos of positions) {
+        const priceMicros = priceByAsset.get(pos.assetId) ?? DEFAULT_MARK_PRICE_MICROS;
+        totalPositionValueMicros += (pos.shareMicros * BigInt(priceMicros)) / 1_000_000n;
+    }
+
+    const cashMicros = initialBankrollMicros + stateCashMicros;
+    const equityMicros = cashMicros + totalPositionValueMicros;
+
+    const contributedCapitalMicros =
+        tradingMode === TradingMode.LIVE
+            ? liveBaselineEquityMicros ?? equityMicros
+            : initialBankrollMicros + paperContributedCapitalMicros;
+
+    const pnlMicros = equityMicros - contributedCapitalMicros;
 
     return {
-        equityMicros: computed.equityMicros,
-        contributedCapitalMicros: computed.contributedCapitalMicros,
-        pnlMicros: computed.pnlMicros,
+        equityMicros,
+        contributedCapitalMicros,
+        pnlMicros,
         positionCount: positions.length,
     };
 }
@@ -78,16 +121,19 @@ async function writeEquityPoint(
     bucketTime: Date,
     equityMicros: bigint,
     contributedCapitalMicros: bigint,
-    pnlMicros: bigint
+    pnlMicros: bigint,
+    tradingMode: TradingMode = TradingMode.PAPER
 ): Promise<void> {
     await prisma.equityPoint.upsert({
         where: {
-            granularity_bucketTime: {
+            tradingMode_granularity_bucketTime: {
+                tradingMode,
                 granularity,
                 bucketTime,
             },
         },
         create: {
+            tradingMode,
             granularity,
             bucketTime,
             equityMicros,
@@ -113,36 +159,42 @@ async function tickOnce(): Promise<void> {
     const nowMs = now.getTime();
 
     try {
-        const snapshot = await computeEquitySnapshot();
+        for (const tradingMode of [TradingMode.PAPER, TradingMode.LIVE]) {
+            const snapshot = await computeEquitySnapshot(tradingMode);
 
-        for (const cfg of GRANULARITIES) {
-            const bucketTime = getBucketTime(nowMs, cfg.intervalMs);
-            const bucketMs = bucketTime.getTime();
+            for (const cfg of GRANULARITIES) {
+                const bucketTime = getBucketTime(nowMs, cfg.intervalMs);
+                const bucketMs = bucketTime.getTime();
 
-            if (cfg.granularity !== EquityPointGranularity.M1) {
-                if (!isWithinBoundaryWindow(nowMs, cfg.intervalMs, EQUITY_BOUNDARY_WINDOW_MS)) continue;
-                if (lastBucketMsByGranularity.get(cfg.granularity) === bucketMs) continue;
+                const mapKey = `${tradingMode}:${cfg.granularity}`;
+
+                if (cfg.granularity !== EquityPointGranularity.M1) {
+                    if (!isWithinBoundaryWindow(nowMs, cfg.intervalMs, EQUITY_BOUNDARY_WINDOW_MS)) continue;
+                    if (lastBucketMsByModeGranularity.get(mapKey) === bucketMs) continue;
+                }
+
+                await writeEquityPoint(
+                    cfg.granularity,
+                    bucketTime,
+                    snapshot.equityMicros,
+                    snapshot.contributedCapitalMicros,
+                    snapshot.pnlMicros,
+                    tradingMode
+                );
+
+                lastBucketMsByModeGranularity.set(mapKey, bucketMs);
             }
 
-            await writeEquityPoint(
-                cfg.granularity,
-                bucketTime,
-                snapshot.equityMicros,
-                snapshot.contributedCapitalMicros,
-                snapshot.pnlMicros
+            logger.info(
+                {
+                    tradingMode,
+                    equityMicros: snapshot.equityMicros.toString(),
+                    pnlMicros: snapshot.pnlMicros.toString(),
+                    positionCount: snapshot.positionCount,
+                },
+                "Equity point tick complete"
             );
-
-            lastBucketMsByGranularity.set(cfg.granularity, bucketMs);
         }
-
-        logger.info(
-            {
-                equityMicros: snapshot.equityMicros.toString(),
-                pnlMicros: snapshot.pnlMicros.toString(),
-                positionCount: snapshot.positionCount,
-            },
-            "Equity point tick complete"
-        );
     } catch (err) {
         logger.error({ err }, "Equity point tick failed");
     } finally {
@@ -158,14 +210,20 @@ async function runRetentionOnce(): Promise<void> {
         for (const cfg of GRANULARITIES) {
             if (!cfg.retentionMs) continue;
             const cutoff = new Date(nowMs - cfg.retentionMs);
-            const result = await prisma.equityPoint.deleteMany({
-                where: {
-                    granularity: cfg.granularity,
-                    bucketTime: { lt: cutoff },
-                },
-            });
-            if (result.count > 0) {
-                log.info({ granularity: cfg.granularity, deleted: result.count }, "Deleted old equity points");
+            for (const tradingMode of [TradingMode.PAPER, TradingMode.LIVE]) {
+                const result = await prisma.equityPoint.deleteMany({
+                    where: {
+                        tradingMode,
+                        granularity: cfg.granularity,
+                        bucketTime: { lt: cutoff },
+                    },
+                });
+                if (result.count > 0) {
+                    log.info(
+                        { tradingMode, granularity: cfg.granularity, deleted: result.count },
+                        "Deleted old equity points"
+                    );
+                }
             }
         }
     } catch (err) {

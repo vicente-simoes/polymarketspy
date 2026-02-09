@@ -16,6 +16,7 @@ interface User {
     label: string
     profileWallet: string
     enabled: boolean
+    liveOverride: "INHERIT" | "FORCE_ON" | "FORCE_OFF"
     proxies: any[]
     metrics: UserMetrics
 }
@@ -38,6 +39,18 @@ export function UsersTable({ users }: UsersTableProps) {
 
     const formatWallet = (wallet: string) => {
         return `${wallet.substring(0, 6)}...${wallet.substring(wallet.length - 4)}`
+    }
+
+    const formatLiveOverride = (value: User["liveOverride"]) => {
+        switch (value) {
+            case "FORCE_ON":
+                return "Force ON"
+            case "FORCE_OFF":
+                return "Force OFF"
+            case "INHERIT":
+            default:
+                return "Inherit"
+        }
     }
 
     const handleToggle = async (userId: string, currentStatus: boolean) => {
@@ -77,6 +90,51 @@ export function UsersTable({ users }: UsersTableProps) {
                 variant: "destructive",
                 title: "Error",
                 description: "Failed to update user status",
+            })
+        }
+    }
+
+    const handleLiveOverrideChange = async (userId: string, next: User["liveOverride"]) => {
+        const updatedUsers = users.map((user) =>
+            user.id === userId ? { ...user, liveOverride: next } : user
+        )
+        mutate("/api/users", updatedUsers, false)
+
+        try {
+            const response = await fetch("/api/users/live-override", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ id: userId, liveOverride: next }),
+            })
+
+            if (!response.ok) {
+                throw new Error("Failed to update live override")
+            }
+
+            const updated = await response.json()
+
+            const finalUsers = users.map((user) =>
+                user.id === userId
+                    ? {
+                          ...user,
+                          liveOverride:
+                              updated.liveOverride === "FORCE_ON" ||
+                              updated.liveOverride === "FORCE_OFF" ||
+                              updated.liveOverride === "INHERIT"
+                                  ? updated.liveOverride
+                                  : user.liveOverride,
+                      }
+                    : user
+            )
+
+            mutate("/api/users", finalUsers, false)
+            mutate("/api/users")
+        } catch (error) {
+            mutate("/api/users")
+            toast({
+                variant: "destructive",
+                title: "Error",
+                description: "Failed to update live override",
             })
         }
     }
@@ -128,6 +186,28 @@ export function UsersTable({ users }: UsersTableProps) {
                                     </button>
                                 </div>
 
+                                <div className="mt-3 rounded-xl border border-[#1F1F1F] bg-[#0D0D0D] p-3">
+                                    <div className="text-[#6f6f6f] uppercase tracking-wider text-xs">
+                                        Live Override
+                                    </div>
+                                    <div className="mt-2">
+                                        <select
+                                            value={user.liveOverride}
+                                            onChange={(event) =>
+                                                handleLiveOverrideChange(
+                                                    user.id,
+                                                    event.target.value as User["liveOverride"]
+                                                )
+                                            }
+                                            className="h-10 w-full rounded-lg border border-[#27272A] bg-[#111111] px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-[#86efac]"
+                                        >
+                                            <option value="INHERIT">Inherit</option>
+                                            <option value="FORCE_ON">Force ON</option>
+                                            <option value="FORCE_OFF">Force OFF</option>
+                                        </select>
+                                    </div>
+                                </div>
+
                                 <div className="mt-4 grid grid-cols-2 gap-3 text-xs">
                                     <div className="rounded-xl border border-[#1F1F1F] bg-[#0D0D0D] p-3">
                                         <div className="text-[#6f6f6f] uppercase tracking-wider">
@@ -177,6 +257,7 @@ export function UsersTable({ users }: UsersTableProps) {
                                 </th>
                                 <th className="pb-4 text-left font-medium">Wallet</th>
                                 <th className="pb-4 text-center font-medium">Status</th>
+                                <th className="pb-4 text-center font-medium">Live</th>
                                 <th className="pb-4 text-center font-medium">Exec Equity</th>
                                 <th className="pb-4 text-center font-medium">Exec PnL</th>
                                 <th className="pb-4 text-right font-medium pr-2">Actions</th>
@@ -224,6 +305,23 @@ export function UsersTable({ users }: UsersTableProps) {
                                             >
                                                 {user.enabled ? "Active" : "Paused"}
                                             </button>
+                                        </td>
+                                        <td className="py-4 text-center">
+                                            <select
+                                                value={user.liveOverride}
+                                                onChange={(event) =>
+                                                    handleLiveOverrideChange(
+                                                        user.id,
+                                                        event.target.value as User["liveOverride"]
+                                                    )
+                                                }
+                                                className="h-9 rounded-lg border border-[#27272A] bg-[#111111] px-2 text-xs text-white focus:outline-none focus:ring-2 focus:ring-[#86efac]"
+                                                title={formatLiveOverride(user.liveOverride)}
+                                            >
+                                                <option value="INHERIT">Inherit</option>
+                                                <option value="FORCE_ON">Force ON</option>
+                                                <option value="FORCE_OFF">Force OFF</option>
+                                            </select>
                                         </td>
                                         <td className="py-4 text-center text-white font-medium font-mono">
                                             {formatCurrency(user.metrics.execEquity)}

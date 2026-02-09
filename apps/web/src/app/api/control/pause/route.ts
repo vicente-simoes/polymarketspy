@@ -4,9 +4,18 @@ import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import prisma from "@/lib/prisma"
 import { z } from "zod"
 
-const PauseSchema = z.object({
-    paused: z.boolean()
-})
+export const dynamic = "force-dynamic"
+
+const SYSTEM_CONFIG_KEY = "system:config"
+
+const PauseSchema = z.union([
+    z.object({
+        paused: z.boolean()
+    }),
+    z.object({
+        action: z.enum(["PAUSE", "RESUME"])
+    })
+])
 
 export async function POST(request: Request) {
     const session = await getServerSession(authOptions)
@@ -16,22 +25,27 @@ export async function POST(request: Request) {
 
     try {
         const json = await request.json()
-        const { paused } = PauseSchema.parse(json)
+        const parsed = PauseSchema.parse(json)
+
+        const copyEngineEnabled = "paused" in parsed ? !parsed.paused : parsed.action === "RESUME"
+
+        const existing = await prisma.systemCheckpoint.findUnique({
+            where: { key: SYSTEM_CONFIG_KEY },
+            select: { valueJson: true },
+        })
+        const existingJson = (existing?.valueJson || {}) as Record<string, any>
+        const nextJson = {
+            ...existingJson,
+            copyEngineEnabled,
+        }
 
         await prisma.systemCheckpoint.upsert({
-            where: { key: "system:copy_engine_enabled" },
-            update: {
-                valueJson: JSON.stringify(!paused), // paused=true -> enabled=false
-                updatedAt: new Date()
-            },
-            create: {
-                key: "system:copy_engine_enabled",
-                valueJson: JSON.stringify(!paused),
-                updatedAt: new Date()
-            }
+            where: { key: SYSTEM_CONFIG_KEY },
+            update: { valueJson: nextJson },
+            create: { key: SYSTEM_CONFIG_KEY, valueJson: nextJson },
         })
 
-        return NextResponse.json({ success: true, paused })
+        return NextResponse.json({ success: true, copyEngineEnabled })
     } catch (error) {
         console.error("Failed to toggle pause:", error)
         if (error instanceof z.ZodError) {

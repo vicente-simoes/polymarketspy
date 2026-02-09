@@ -4,7 +4,7 @@ import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import prisma from "@/lib/prisma"
 import { clearServerCache } from "@/lib/server-cache"
 import { randomUUID } from "crypto"
-import { LedgerEntryType } from "@prisma/client"
+import { LedgerEntryType, PortfolioScope, TradingMode } from "@prisma/client"
 
 function parseUsdToMicros(value: unknown): number | null {
     const parsed =
@@ -43,6 +43,7 @@ export async function POST(request: Request) {
         await prisma.$transaction(async (tx) => {
             await tx.ledgerEntry.create({
                 data: {
+                    tradingMode: TradingMode.PAPER,
                     portfolioScope: "EXEC_GLOBAL",
                     followedUserId: null,
                     marketId: null,
@@ -56,9 +57,15 @@ export async function POST(request: Request) {
             })
 
             await tx.globalPortfolioState.upsert({
-                where: { id: "EXEC_GLOBAL" },
+                where: {
+                    tradingMode_portfolioScope: {
+                        tradingMode: TradingMode.PAPER,
+                        portfolioScope: PortfolioScope.EXEC_GLOBAL,
+                    },
+                },
                 create: {
-                    id: "EXEC_GLOBAL",
+                    tradingMode: TradingMode.PAPER,
+                    portfolioScope: PortfolioScope.EXEC_GLOBAL,
                     cashMicros: cashDeltaMicros,
                     contributedCapitalMicros: cashDeltaMicros
                 },

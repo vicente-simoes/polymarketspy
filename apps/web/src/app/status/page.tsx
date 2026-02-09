@@ -298,7 +298,7 @@ export default function StatusPage() {
                                                 value={formatBytes(status?.database.sizeBytes ?? null)}
                                             />
                                             <SummaryTile
-                                                label="Copy Attempts"
+                                                label="Copy Attempts (DB)"
                                                 value={`${status?.database.counts.copyAttempts ?? 0}`}
                                             />
                                             <SummaryTile

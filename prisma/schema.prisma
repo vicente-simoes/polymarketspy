@@ -35,9 +35,9 @@ enum CopyDecision {
 }
 
 enum CopySourceType {
-  IMMEDIATE   // Large trade, bypassed buffer (executed directly)
-  BUFFER      // Came from small trade buffer (batched)
-  AGGREGATOR  // Came from 250ms aggregator (buffer disabled)
+  IMMEDIATE // Large trade, bypassed buffer (executed directly)
+  BUFFER // Came from small trade buffer (batched)
+  AGGREGATOR // Came from 250ms aggregator (buffer disabled)
 }
 
 enum BookSource {
@@ -46,9 +46,9 @@ enum BookSource {
 }
 
 enum EnrichmentStatus {
-  PENDING   // WS-first, minimal data only
-  ENRICHED  // Market metadata filled
-  FAILED    // Enrichment failed after retries
+  PENDING // WS-first, minimal data only
+  ENRICHED // Market metadata filled
+  FAILED // Enrichment failed after retries
 }
 
 enum LedgerEntryType {
@@ -69,63 +69,103 @@ enum EquityPointGranularity {
   D1
 }
 
+enum TradingMode {
+  PAPER
+  LIVE
+}
+
+enum LiveOrderStatus {
+  CREATED
+  SUBMITTING
+  OPEN
+  PARTIAL
+  FILLED
+  CANCELED
+  REJECTED
+  FAILED
+  SUBMISSION_UNKNOWN
+}
+
+enum LiveFillOrigin {
+  APP
+  EXTERNAL
+}
+
+enum LiveOrderType {
+  FAK
+  FOK
+  GTC
+}
+
+enum LiveOverride {
+  INHERIT
+  FORCE_ON
+  FORCE_OFF
+}
+
 model FollowedUser {
-  id            String   @id @default(uuid())
+  id            String                    @id @default(uuid())
   label         String
-  profileWallet String   @unique
-  enabled       Boolean  @default(true)
-  createdAt     DateTime @default(now())
+  profileWallet String                    @unique
+  enabled       Boolean                   @default(true)
+  liveOverride  LiveOverride              @default(INHERIT)
+  createdAt     DateTime                  @default(now())
   proxies       FollowedUserProxyWallet[]
   guardrails    GuardrailConfig[]
   sizing        CopySizingConfig[]
   copyAttempts  CopyAttempt[]
+  liveOrders    LiveOrder[]
 }
 
 model FollowedUserProxyWallet {
-  id            String @id @default(uuid())
+  id             String @id @default(uuid())
   followedUserId String
-  wallet        String @unique
+  wallet         String @unique
 
-  followedUser  FollowedUser @relation(fields: [followedUserId], references: [id], onDelete: Cascade)
+  followedUser FollowedUser @relation(fields: [followedUserId], references: [id], onDelete: Cascade)
 
   @@index([followedUserId])
 }
 
 model GuardrailConfig {
-  id            String      @id @default(uuid())
-  scope         ConfigScope
+  id             String      @id @default(uuid())
+  scope          ConfigScope
+  tradingMode    TradingMode @default(PAPER)
   followedUserId String?
   // stored as JSON; worker materializes effective config
   configJson     Json
-  updatedAt      DateTime @updatedAt
+  updatedAt      DateTime    @updatedAt
 
-  followedUser   FollowedUser? @relation(fields: [followedUserId], references: [id], onDelete: Cascade)
+  followedUser FollowedUser? @relation(fields: [followedUserId], references: [id], onDelete: Cascade)
 
   @@index([scope])
+  @@index([tradingMode])
   @@index([followedUserId])
 }
 
 model CopySizingConfig {
-  id            String      @id @default(uuid())
-  scope         ConfigScope
+  id             String      @id @default(uuid())
+  scope          ConfigScope
+  tradingMode    TradingMode @default(PAPER)
   followedUserId String?
   configJson     Json
-  updatedAt      DateTime @updatedAt
+  updatedAt      DateTime    @updatedAt
 
-  followedUser   FollowedUser? @relation(fields: [followedUserId], references: [id], onDelete: Cascade)
+  followedUser FollowedUser? @relation(fields: [followedUserId], references: [id], onDelete: Cascade)
 
   @@index([scope])
+  @@index([tradingMode])
   @@index([followedUserId])
 }
 
 model Market {
-  id          String   @id // Polymarket market id
+  id          String    @id // Polymarket market id
   conditionId String
   resolvedAt  DateTime?
   closeTime   DateTime?
-  active      Boolean  @default(true)
+  active      Boolean   @default(true)
 
-  assets      OutcomeAsset[]
+  assets OutcomeAsset[]
 
   @@index([conditionId])
   @@index([closeTime])
@@ -136,234 +176,253 @@ model OutcomeAsset {
   marketId String
   outcome  String
 
-  market   Market @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  market Market @relation(fields: [marketId], references: [id], onDelete: Cascade)
 
   @@index([marketId])
 }
 
 model TradeEvent {
-  id                   String   @id @default(uuid())
+  id          String  @id @default(uuid())
   // source: POLYMARKET_API, ALCHEMY (legacy non-canonical), or ONCHAIN_WS (canonical WS-first)
-  source               String
-  sourceId             String?
-  txHash               String?
-  logIndex             Int?
-  isCanonical          Boolean  @default(false)
+  source      String
+  sourceId    String?
+  txHash      String?
+  logIndex    Int?
+  isCanonical Boolean @default(false)
 
-  profileWallet        String
-  proxyWallet          String?
+  profileWallet String
+  proxyWallet   String?
 
-  marketId             String?
-  assetId              String?
+  marketId String?
+  assetId  String?
 
   // WS-first enrichment support
-  enrichmentStatus     EnrichmentStatus @default(ENRICHED)  // Existing API trades are already enriched
-  enrichedAt           DateTime?
-  rawTokenId           String?          // Outcome token ID from OrderFilled log (non-USDC assetId)
-  conditionId          String?          // CTF conditionId (filled by enrichment)
+  enrichmentStatus EnrichmentStatus @default(ENRICHED) // Existing API trades are already enriched
+  enrichedAt       DateTime?
+  rawTokenId       String? // Outcome token ID from OrderFilled log (non-USDC assetId)
+  conditionId      String? // CTF conditionId (filled by enrichment)
 
-  side                 TradeSide
-  priceMicros          Int      // 0..1_000_000
-  shareMicros          BigInt
-  notionalMicros       BigInt
-  feeMicros            BigInt?
+  side           TradeSide
+  priceMicros    Int // 0..1_000_000
+  shareMicros    BigInt
+  notionalMicros BigInt
+  feeMicros      BigInt?
 
-  eventTime            DateTime
-  detectTime           DateTime
+  eventTime  DateTime
+  detectTime DateTime
 
-  createdAt            DateTime @default(now())
+  createdAt DateTime @default(now())
 
+  @@unique([source, sourceId])
+  @@unique([txHash, logIndex])
   @@index([profileWallet, eventTime])
   @@index([proxyWallet, eventTime])
   @@index([assetId, eventTime])
-  @@index([enrichmentStatus])         // For efficient pending enrichment queries
-  @@unique([source, sourceId])
-  @@unique([txHash, logIndex])
+  @@index([enrichmentStatus]) // For efficient pending enrichment queries
 }
 
 model TokenMetadataCache {
-  tokenId       String    @id           // Outcome token ID (BigInt as string)
-  conditionId   String?                 // CTF conditionId (from on-chain or API)
-  marketId      String?                 // Polymarket market ID
-  marketSlug    String?                 // For display/linking
-  outcomeLabel  String?                 // "Yes" / "No" / custom outcome
-  marketTitle   String?                 // Full market question
-  closeTime     DateTime?               // Market close time
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  tokenId      String    @id // Outcome token ID (BigInt as string)
+  conditionId  String? // CTF conditionId (from on-chain or API)
+  marketId     String? // Polymarket market ID
+  marketSlug   String? // For display/linking
+  outcomeLabel String? // "Yes" / "No" / custom outcome
+  marketTitle  String? // Full market question
+  closeTime    DateTime? // Market close time
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
   @@index([conditionId])
   @@index([marketId])
 }
 
 model ActivityEvent {
-  id             String   @id @default(uuid())
-  source         String
-  sourceId       String
-  isCanonical    Boolean  @default(false)
+  id          String  @id @default(uuid())
+  source      String
+  sourceId    String
+  isCanonical Boolean @default(false)
 
-  profileWallet  String
-  proxyWallet    String?
+  profileWallet String
+  proxyWallet   String?
 
-  type           ActivityType
+  type        ActivityType
   // store involved asset ids and amounts in JSON
-  payloadJson    Json
+  payloadJson Json
 
-  eventTime      DateTime
-  detectTime     DateTime
+  eventTime  DateTime
+  detectTime DateTime
 
-  createdAt      DateTime @default(now())
+  createdAt DateTime @default(now())
 
-  @@index([profileWallet, eventTime])
   @@unique([source, sourceId])
+  @@index([profileWallet, eventTime])
 }
 
 model CopyAttempt {
-  id                      String      @id @default(uuid())
-  portfolioScope          PortfolioScope
-  followedUserId          String?
-  groupKey                String      // deterministic key for aggregation group
+  id             String         @id @default(uuid())
+  tradingMode    TradingMode    @default(PAPER)
+  portfolioScope PortfolioScope
+  followedUserId String?
+  groupKey       String // deterministic key for aggregation group
 
-  decision                CopyDecision
-  reasonCodes             String[]    // non-empty when SKIP
+  decision    CopyDecision
+  reasonCodes String[] // non-empty when SKIP
 
-  sourceType              CopySourceType @default(AGGREGATOR)
-  bufferedTradeCount      Int            @default(1)  // meaningful when sourceType=BUFFER
+  sourceType         CopySourceType @default(AGGREGATOR)
+  bufferedTradeCount Int            @default(1) // meaningful when sourceType=BUFFER
 
-  bookSource              BookSource?
-  usedRestFallback        Boolean     @default(false)
+  bookSource       BookSource?
+  usedRestFallback Boolean     @default(false)
 
-  targetNotionalMicros    BigInt
-  filledNotionalMicros    BigInt      @default(0)
-  vwapPriceMicros         Int?        // set when executed/partial
-  filledRatioBps          Int         @default(0) // 0..10000
+  // Decision-time spread (bestAsk - bestBid), in price micros. Useful when skipped due to SPREAD_TOO_WIDE.
+  spreadMicrosAtDecision Int?
+
+  targetNotionalMicros BigInt
+  filledNotionalMicros BigInt @default(0)
+  vwapPriceMicros      Int? // set when executed/partial
+  filledRatioBps       Int    @default(0) // 0..10000
 
   theirReferencePriceMicros Int
-  midPriceMicrosAtDecision Int
+  midPriceMicrosAtDecision  Int
 
-  createdAt               DateTime @default(now())
+  createdAt DateTime @default(now())
 
-  followedUser            FollowedUser? @relation(fields: [followedUserId], references: [id], onDelete: Cascade)
-  fills                   ExecutableFill[]
+  followedUser FollowedUser?    @relation(fields: [followedUserId], references: [id], onDelete: Cascade)
+  fills        ExecutableFill[]
+  liveOrder    LiveOrder?
 
-  @@index([portfolioScope, createdAt])
+  @@unique([tradingMode, portfolioScope, followedUserId, groupKey])
+  @@index([tradingMode, portfolioScope, createdAt])
   @@index([followedUserId, createdAt])
-  @@unique([portfolioScope, followedUserId, groupKey])
 }
 
 model ExecutableFill {
-  id                String  @id @default(uuid())
-  copyAttemptId     String
-  filledShareMicros BigInt
-  fillPriceMicros   Int
+  id                 String @id @default(uuid())
+  copyAttemptId      String
+  filledShareMicros  BigInt
+  fillPriceMicros    Int
   fillNotionalMicros BigInt
 
-  copyAttempt       CopyAttempt @relation(fields: [copyAttemptId], references: [id], onDelete: Cascade)
+  copyAttempt CopyAttempt @relation(fields: [copyAttemptId], references: [id], onDelete: Cascade)
 
   @@index([copyAttemptId])
 }
 
 model LedgerEntry {
-  id              String        @id @default(uuid())
-  portfolioScope  PortfolioScope
-  followedUserId  String?
-  marketId        String?
-  assetId         String?
+  id             String         @id @default(uuid())
+  tradingMode    TradingMode    @default(PAPER)
+  portfolioScope PortfolioScope
+  followedUserId String?
+  marketId       String?
+  assetId        String?
 
-  entryType       LedgerEntryType
+  entryType LedgerEntryType
 
   shareDeltaMicros BigInt
   cashDeltaMicros  BigInt
   priceMicros      Int?
 
-  refId            String
-  createdAt        DateTime @default(now())
+  refId     String
+  createdAt DateTime @default(now())
 
-  @@index([portfolioScope, createdAt])
+  @@unique([tradingMode, portfolioScope, refId, entryType])
+  @@index([tradingMode, portfolioScope, createdAt])
   @@index([assetId, createdAt])
-  @@index([portfolioScope, assetId, entryType, createdAt])
-  @@unique([portfolioScope, refId, entryType])
+  @@index([tradingMode, portfolioScope, assetId, entryType, createdAt])
 }
 
 model PortfolioSnapshot {
-  id              String        @id @default(uuid())
-  portfolioScope  PortfolioScope
-  followedUserId  String?
-  bucketTime      DateTime      // minute-bucketed timestamp
+  id             String         @id @default(uuid())
+  portfolioScope PortfolioScope
+  followedUserId String?
+  bucketTime     DateTime // minute-bucketed timestamp
 
-  equityMicros    BigInt
-  cashMicros      BigInt
-  exposureMicros  BigInt
+  equityMicros        BigInt
+  cashMicros          BigInt
+  exposureMicros      BigInt
   unrealizedPnlMicros BigInt
   realizedPnlMicros   BigInt
 
+  @@unique([portfolioScope, followedUserId, bucketTime])
   @@index([portfolioScope, bucketTime])
   @@index([followedUserId, bucketTime])
-  @@unique([portfolioScope, followedUserId, bucketTime])
 }
 
 model MarketPriceSnapshot {
-  id             String   @id @default(uuid())
-  assetId        String
-  bucketTime     DateTime
+  id                  String   @id @default(uuid())
+  assetId             String
+  bucketTime          DateTime
   midpointPriceMicros Int
 
-  @@index([assetId, bucketTime])
   @@unique([assetId, bucketTime])
+  @@index([assetId, bucketTime])
 }
 
 model CurrentPrice {
-  assetId             String @id
+  assetId             String   @id
   midpointPriceMicros Int
   updatedAt           DateTime @updatedAt
 }
 
 model CurrentPosition {
-  assetId          String @id
-  marketId         String?
-  shareMicros      BigInt
+  id                String      @id @default(uuid())
+  tradingMode       TradingMode @default(PAPER)
+  assetId           String
+  marketId          String?
+  shareMicros       BigInt
   netCashFlowMicros BigInt
-  updatedAt        DateTime @updatedAt
+  updatedAt         DateTime    @updatedAt
 
+  @@unique([tradingMode, assetId])
+  @@index([tradingMode])
   @@index([marketId])
 }
 
 model CurrentPositionByLeader {
-  assetId          String
-  followedUserId   String
-  marketId         String?
-  shareMicros      BigInt
+  id                String      @id @default(uuid())
+  tradingMode       TradingMode @default(PAPER)
+  assetId           String
+  followedUserId    String
+  marketId          String?
+  shareMicros       BigInt
   netCashFlowMicros BigInt
-  updatedAt        DateTime @updatedAt
+  updatedAt         DateTime    @updatedAt
 
-  @@id([assetId, followedUserId])
-  @@index([followedUserId])
+  @@unique([tradingMode, assetId, followedUserId])
+  @@index([tradingMode, followedUserId])
   @@index([marketId])
 }
 
 model GlobalPortfolioState {
-  id                     String @id
-  cashMicros              BigInt
+  id                       String         @id @default(uuid())
+  tradingMode              TradingMode    @default(PAPER)
+  portfolioScope           PortfolioScope @default(EXEC_GLOBAL)
+  cashMicros               BigInt
   contributedCapitalMicros BigInt
-  updatedAt               DateTime @updatedAt
+  updatedAt                DateTime       @updatedAt
+
+  @@unique([tradingMode, portfolioScope])
 }
 
 model EquityPoint {
-  granularity             EquityPointGranularity
-  bucketTime              DateTime
-  equityMicros            BigInt
+  id                       String                 @id @default(uuid())
+  tradingMode              TradingMode            @default(PAPER)
+  granularity              EquityPointGranularity
+  bucketTime               DateTime
+  equityMicros             BigInt
   contributedCapitalMicros BigInt
-  pnlMicros               BigInt
-  updatedAt               DateTime @updatedAt
+  pnlMicros                BigInt
+  updatedAt                DateTime               @updatedAt
 
-  @@id([granularity, bucketTime])
+  @@unique([tradingMode, granularity, bucketTime])
+  @@index([tradingMode, granularity])
 }
 
 model SystemCheckpoint {
-  id            String   @id @default(uuid())
-  key           String   @unique // e.g. "alchemy:lastBlock" or "api:lastTradeTime:<userId>"
-  valueJson     Json
-  updatedAt     DateTime @updatedAt
+  id        String   @id @default(uuid())
+  key       String   @unique // e.g. "alchemy:lastBlock" or "api:lastTradeTime:<userId>"
+  valueJson Json
+  updatedAt DateTime @updatedAt
 }
 
 model AllowedAdminEmail {
@@ -373,18 +432,18 @@ model AllowedAdminEmail {
 }
 
 model Account {
-  id                 String  @id @default(cuid())
-  userId             String
-  type               String
-  provider           String
-  providerAccountId  String
-  refresh_token      String?  @db.Text
-  access_token       String?  @db.Text
-  expires_at         Int?
-  token_type         String?
-  scope              String?
-  id_token           String?  @db.Text
-  session_state      String?
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -415,4 +474,100 @@ model VerificationToken {
   expires    DateTime
 
   @@unique([identifier, token])
+}
+
+// ============================================
+// LIVE TRADING TABLES
+// ============================================
+
+model LiveOrder {
+  id             String  @id @default(uuid())
+  copyAttemptId  String? @unique
+  followedUserId String?
+
+  // Idempotency & exchange identifiers
+  idempotencyKey String  @unique
+  clientOrderId  String? @unique
+  clobOrderId    String? @unique
+
+  // Order parameters
+  tokenId          String
+  side             TradeSide
+  orderType        LiveOrderType @default(FAK)
+  limitPriceMicros Int
+  sizeShareMicros  BigInt
+
+  // Decision snapshot (for audit/debug)
+  bestBidMicrosAtDecision Int?
+  bestAskMicrosAtDecision Int?
+  bookSource              BookSource?
+  bookAgeMs               Int?
+
+  // Fill tracking aggregates
+  filledShareMicros    BigInt @default(0)
+  filledNotionalMicros BigInt @default(0)
+  avgFillPriceMicros   Int?
+
+  // Lifecycle
+  status       LiveOrderStatus @default(CREATED)
+  createdAt    DateTime        @default(now())
+  submittedAt  DateTime?
+  lastUpdateAt DateTime?
+  finalizedAt  DateTime?
+
+  // Error fields
+  lastErrorCode    String?
+  lastErrorMessage String?
+
+  // Relations
+  copyAttempt  CopyAttempt?  @relation(fields: [copyAttemptId], references: [id], onDelete: SetNull)
+  followedUser FollowedUser? @relation(fields: [followedUserId], references: [id], onDelete: SetNull)
+  fills        LiveFill[]
+
+  @@index([status])
+  @@index([createdAt])
+  @@index([tokenId, createdAt])
+  @@index([followedUserId, createdAt])
+}
+
+model LiveFill {
+  id          String         @id @default(uuid())
+  liveOrderId String?
+  origin      LiveFillOrigin @default(APP)
+
+  // Exchange identifiers
+  tradeId     String  @unique
+  clobOrderId String?
+
+  // Fill details
+  tokenId        String
+  side           TradeSide
+  matchedAt      DateTime
+  priceMicros    Int
+  shareMicros    BigInt
+  notionalMicros BigInt
+  feeMicros      BigInt?
+
+  // Status for processing
+  status String @default("PENDING") // PENDING, PROCESSED, etc.
+
+  createdAt DateTime @default(now())
+
+  // Relations
+  liveOrder LiveOrder? @relation(fields: [liveOrderId], references: [id], onDelete: SetNull)
+
+  @@index([matchedAt])
+  @@index([clobOrderId])
+  @@index([tokenId, matchedAt])
+  @@index([origin])
+}
+
+model TokenTradingParamsCache {
+  tokenId                 String   @id
+  tickSizeMicros          Int
+  minOrderSizeShareMicros BigInt
+  sizeStepShareMicros     BigInt   @default(1)
+  updatedAt               DateTime @updatedAt
+
+  @@index([updatedAt])
 }

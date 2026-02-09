@@ -12,7 +12,16 @@
 export * from "./types.js";
 
 // Configuration
-export { getGlobalConfig, getUserConfig, clearConfigCache, DEFAULT_GUARDRAILS, DEFAULT_SIZING } from "./config.js";
+export {
+    getGlobalConfig,
+    getUserConfig,
+    clearConfigCache,
+    DEFAULT_GUARDRAILS,
+    DEFAULT_LIVE_GUARDRAILS,
+    DEFAULT_SIZING,
+    DEFAULT_SMALL_TRADE_BUFFERING,
+    type FullConfig,
+} from "./config.js";
 
 // Sizing
 export { computeTargetNotional, computeTargetShares, computeNotional } from "./sizing.js";
@@ -42,7 +51,7 @@ export { executeCopyAttempt, executeTradeGroup, executeActivityGroup, type Execu
 
 // Workers
 export { groupEventsWorker, startGroupEventsWorker } from "./processor.js";
-export { copyAttemptGlobalWorker, startCopyAttemptWorkers } from "./workers.js";
+export { copyAttemptGlobalWorker, copyAttemptLiveWorker, startCopyAttemptWorkers } from "./workers.js";
 
 // Flush loop (small trade buffer)
 export { startFlushLoop, stopFlushLoop, stopFlushLoopGracefully } from "./flushLoop.js";

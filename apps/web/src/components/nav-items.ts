@@ -8,6 +8,7 @@ import {
   ShoppingCart,
   Users,
   PieChart,
+  Zap,
 } from "lucide-react"
 
 export type NavItem = {
@@ -19,9 +20,11 @@ export type NavItem = {
 export const navItems: NavItem[] = [
   { href: "/", label: "DASHBOARD", icon: Blocks },
   { href: "/users", label: "FOLLOWED USERS", icon: Users },
-  { href: "/portfolio", label: "GLOBAL PORTFOLIO", icon: PieChart },
+  { href: "/paper-portfolio", label: "PAPER PORTFOLIO", icon: PieChart },
+  { href: "/real-portfolio", label: "REAL PORTFOLIO", icon: PieChart },
   { href: "/trades", label: "TRADES", icon: Activity },
-  { href: "/copy-attempts", label: "COPY ATTEMPTS", icon: ClipboardList },
+  { href: "/paper-trades", label: "PAPER TRADES", icon: ClipboardList },
+  { href: "/live-trades", label: "LIVE TRADES", icon: Zap },
   { href: "/markets", label: "MARKETS", icon: ShoppingCart },
   { href: "/config", label: "CONFIG", icon: Settings },
   { href: "/status", label: "SYSTEM STATUS", icon: Server },

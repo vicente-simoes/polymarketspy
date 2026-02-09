@@ -12,6 +12,7 @@
 
 import { TradeSide, ActivityType } from "@prisma/client";
 import { createChildLogger } from "../log/logger.js";
+import { getSystemConfig } from "../config/system.js";
 import { queues } from "../queue/queues.js";
 import {
     AGGREGATION_WINDOW_MS,
@@ -22,6 +23,7 @@ import {
     serializeEventGroup,
     getEffectiveTokenId,
 } from "./types.js";
+import { enqueueTradeGroupToEnabledQueues } from "./enqueue.js";
 
 const logger = createChildLogger({ module: "aggregator" });
 
@@ -154,12 +156,20 @@ async function flushTradeGroup(aggKey: string): Promise<void> {
     );
 
     const queueGroup = serializeEventGroup(group);
+    if (queueGroup.type !== "trade") {
+        throw new Error(`Expected trade group for enqueue, got: ${queueGroup.type}`);
+    }
 
-    // Enqueue for global executable simulation
-    await queues.copyAttemptGlobal.add("copy-attempt-global", {
-        group: queueGroup,
-        portfolioScope: "EXEC_GLOBAL",
-    });
+    const log = logger.child({ groupKey });
+    const enqueueResult = await enqueueTradeGroupToEnabledQueues(
+        queueGroup,
+        "AGGREGATOR",
+        events.length,
+        first.followedUserId,
+        log
+    );
+
+    log.debug({ ...enqueueResult }, "Trade group enqueued for execution");
 }
 
 /**
@@ -219,11 +229,24 @@ async function flushActivityGroup(aggKey: string): Promise<void> {
 
     const queueGroup = serializeEventGroup(group);
 
-    // Enqueue for global executable simulation
-    await queues.copyAttemptGlobal.add("copy-attempt-global", {
-        group: queueGroup,
-        portfolioScope: "EXEC_GLOBAL",
-    });
+    // Get system config for routing
+    const systemConfig = await getSystemConfig();
+    if (!systemConfig.copyEngineEnabled) {
+        logger.debug({ groupKey }, "Copy engine disabled; skipping activity group enqueue");
+        return;
+    }
+
+    const shouldEnqueuePaper = systemConfig.paperTradingEnabled;
+
+    // Enqueue to paper queue
+    if (shouldEnqueuePaper) {
+        await queues.copyAttemptGlobal.add("copy-attempt-global", {
+            group: queueGroup,
+            portfolioScope: "EXEC_GLOBAL",
+            sourceType: "AGGREGATOR",
+            bufferedTradeCount: events.length,
+        }, { jobId: queueGroup.groupKey });
+    }
 }
 
 /**

@@ -4,6 +4,7 @@ import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import prisma from "@/lib/prisma"
 import { getOrSetServerCache } from "@/lib/server-cache"
 import { withPgStatementTimeout } from "@/lib/pg-guardrails"
+import { TradingMode } from "@prisma/client"
 
 type PnlRange = "1H" | "1D" | "1W" | "1M"
 
@@ -65,6 +66,7 @@ export async function GET(request: NextRequest) {
 
                 const points = await tx.equityPoint.findMany({
                     where: {
+                        tradingMode: TradingMode.PAPER,
                         granularity,
                         bucketTime: { gte: startTime, lte: new Date(nowMs) }
                     },

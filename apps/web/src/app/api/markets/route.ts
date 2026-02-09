@@ -4,6 +4,7 @@ import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import prisma from "@/lib/prisma"
 import { clearServerCache, getOrSetServerCache } from "@/lib/server-cache"
 import { withPgStatementTimeout } from "@/lib/pg-guardrails"
+import { TradingMode } from "@prisma/client"
 
 class MarketNotFoundError extends Error {
     name = "MarketNotFoundError"
@@ -24,7 +25,7 @@ export async function GET(request: Request) {
             const payload = await getOrSetServerCache(`markets:detail:${marketId}`, 30_000, async () => {
                 return withPgStatementTimeout(4000, async (tx) => {
                     const guardrails = await tx.guardrailConfig.findFirst({
-                        where: { scope: "GLOBAL", followedUserId: null },
+                        where: { scope: "GLOBAL", tradingMode: TradingMode.PAPER, followedUserId: null },
                         orderBy: { updatedAt: "desc" }
                     })
                     const guardrailsConfig = (guardrails?.configJson || {}) as Record<string, any>
@@ -46,6 +47,7 @@ export async function GET(request: Request) {
                     const [positionRows, priceSnapshots] = await Promise.all([
                         tx.currentPosition.findMany({
                             where: {
+                                tradingMode: TradingMode.PAPER,
                                 marketId,
                                 shareMicros: { not: BigInt(0) }
                             },
@@ -151,7 +153,7 @@ export async function GET(request: Request) {
         const payload = await getOrSetServerCache(`markets:list:limit=${limit}`, 30_000, async () => {
             return withPgStatementTimeout(4000, async (tx) => {
                 const guardrails = await tx.guardrailConfig.findFirst({
-                    where: { scope: "GLOBAL", followedUserId: null },
+                    where: { scope: "GLOBAL", tradingMode: TradingMode.PAPER, followedUserId: null },
                     orderBy: { updatedAt: "desc" }
                 })
                 const guardrailsConfig = (guardrails?.configJson || {}) as Record<string, any>
@@ -161,6 +163,7 @@ export async function GET(request: Request) {
 
                 const openPositions = await tx.currentPosition.findMany({
                     where: {
+                        tradingMode: TradingMode.PAPER,
                         shareMicros: { not: BigInt(0) },
                         marketId: { not: null }
                     },
@@ -258,7 +261,7 @@ export async function POST(request: Request) {
         }
 
         const existing = await prisma.guardrailConfig.findFirst({
-            where: { scope: "GLOBAL", followedUserId: null },
+            where: { scope: "GLOBAL", tradingMode: TradingMode.PAPER, followedUserId: null },
             orderBy: { updatedAt: "desc" }
         })
 
@@ -280,7 +283,7 @@ export async function POST(request: Request) {
         }
 
         const result = await prisma.guardrailConfig.updateMany({
-            where: { scope: "GLOBAL", followedUserId: null },
+            where: { scope: "GLOBAL", tradingMode: TradingMode.PAPER, followedUserId: null },
             data: { configJson: updatedConfig }
         })
 
@@ -288,6 +291,7 @@ export async function POST(request: Request) {
             await prisma.guardrailConfig.create({
                 data: {
                     scope: "GLOBAL",
+                    tradingMode: TradingMode.PAPER,
                     followedUserId: null,
                     configJson: updatedConfig
                 }

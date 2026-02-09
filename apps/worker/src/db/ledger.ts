@@ -1,8 +1,9 @@
-import { LedgerEntryType, PortfolioScope, Prisma, type LedgerEntry } from "@prisma/client";
+import { LedgerEntryType, PortfolioScope, Prisma, TradingMode, type LedgerEntry } from "@prisma/client";
 
 export const EXEC_GLOBAL_STATE_ID = "EXEC_GLOBAL";
 
 export interface LedgerEntryWriteInput {
+    tradingMode?: TradingMode;
     portfolioScope: PortfolioScope;
     followedUserId: string | null;
     marketId: string | null;
@@ -18,9 +19,13 @@ export async function createLedgerEntryIfNotExistsAndUpdateCaches(
     tx: Prisma.TransactionClient,
     data: LedgerEntryWriteInput
 ): Promise<{ inserted: boolean }> {
+    const tradingMode = data.tradingMode ?? TradingMode.PAPER;
     try {
         const created = await tx.ledgerEntry.create({
-            data,
+            data: {
+                ...data,
+                tradingMode,
+            },
         });
         await applyLedgerEntryToCaches(tx, created);
         return { inserted: true };
@@ -38,13 +43,20 @@ async function applyLedgerEntryToCaches(
 ): Promise<void> {
     if (entry.portfolioScope !== PortfolioScope.EXEC_GLOBAL) return;
 
+    const tradingMode = entry.tradingMode;
     const contributedDelta =
         entry.entryType === LedgerEntryType.DEPOSIT ? entry.cashDeltaMicros : BigInt(0);
 
     await tx.globalPortfolioState.upsert({
-        where: { id: EXEC_GLOBAL_STATE_ID },
+        where: {
+            tradingMode_portfolioScope: {
+                tradingMode,
+                portfolioScope: entry.portfolioScope,
+            },
+        },
         create: {
-            id: EXEC_GLOBAL_STATE_ID,
+            tradingMode,
+            portfolioScope: entry.portfolioScope,
             cashMicros: entry.cashDeltaMicros,
             contributedCapitalMicros: contributedDelta,
         },
@@ -59,8 +71,14 @@ async function applyLedgerEntryToCaches(
     if (!entry.assetId) return;
 
     await tx.currentPosition.upsert({
-        where: { assetId: entry.assetId },
+        where: {
+            tradingMode_assetId: {
+                tradingMode,
+                assetId: entry.assetId,
+            },
+        },
         create: {
+            tradingMode,
             assetId: entry.assetId,
             marketId: entry.marketId,
             shareMicros: entry.shareDeltaMicros,
@@ -77,12 +95,14 @@ async function applyLedgerEntryToCaches(
 
     await tx.currentPositionByLeader.upsert({
         where: {
-            assetId_followedUserId: {
+            tradingMode_assetId_followedUserId: {
+                tradingMode,
                 assetId: entry.assetId,
                 followedUserId: entry.followedUserId,
             },
         },
         create: {
+            tradingMode,
             assetId: entry.assetId,
             followedUserId: entry.followedUserId,
             marketId: entry.marketId,

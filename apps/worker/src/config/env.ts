@@ -3,9 +3,21 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { z } from "zod";
 
-// Load .env from project root (two levels up from apps/worker/src/config)
+// Load env in two layers:
+// 1) Project root `.env` (shared defaults)
+// 2) `apps/worker/.env` (worker-specific overrides, local dev)
+//
+// Note: In Docker builds, `.env` files are typically not copied into the runtime
+// image; Docker Compose should provide env vars explicitly. These calls are
+// primarily for local `pnpm dev` / `node dist` workflows.
 const __dirname = dirname(fileURLToPath(import.meta.url));
+config({ path: resolve(process.cwd(), ".env") });
 config({ path: resolve(__dirname, "../../../../.env") });
+
+config({ path: resolve(process.cwd(), "apps/worker/.env"), override: true });
+// Support both TS (`.../apps/worker/src/config`) and built JS (`.../apps/worker/dist/config`)
+config({ path: resolve(__dirname, "../../../.env"), override: true });
+config({ path: resolve(__dirname, "../../.env"), override: true });
 
 const envSchema = z.object({
     DATABASE_URL: z.string().url(),
@@ -33,6 +45,9 @@ const envSchema = z.object({
     WORKER_CONCURRENCY_COPY_GLOBAL: z.coerce.number().int().positive().optional(),
     WORKER_CONCURRENCY_RECONCILE: z.coerce.number().int().positive().optional(),
     WORKER_CONCURRENCY_PRICES: z.coerce.number().int().positive().optional(),
+
+    // Live trading credentials (optional - only required when live trading is enabled)
+    POLYMARKET_LIVE_PRIVATE_KEY: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

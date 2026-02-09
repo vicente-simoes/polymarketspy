@@ -2,6 +2,12 @@ import { NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import prisma from "@/lib/prisma"
+import { TradingMode } from "@prisma/client"
+
+function parseTradingMode(raw: unknown): TradingMode {
+    if (raw === TradingMode.LIVE) return TradingMode.LIVE
+    return TradingMode.PAPER
+}
 
 export async function POST(request: Request) {
     const session = await getServerSession(authOptions)
@@ -13,10 +19,12 @@ export async function POST(request: Request) {
         const body = await request.json()
         const scope = body?.scope === "USER" ? "USER" : "GLOBAL"
         const userId = body?.userId
+        const tradingMode = parseTradingMode(body?.tradingMode)
 
         const since = new Date(Date.now() - 24 * 60 * 60 * 1000)
         const where: Record<string, any> = {
-            createdAt: { gte: since }
+            createdAt: { gte: since },
+            tradingMode,
         }
 
         if (scope === "GLOBAL") {

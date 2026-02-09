@@ -49,11 +49,13 @@ services:
     environment:
       NODE_ENV: production
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      CLOB_BOOK_WS_ENABLED: ${CLOB_BOOK_WS_ENABLED:-true}
       DATABASE_URL: postgresql://copybot:${POSTGRES_PASSWORD}@db:5432/copybot?schema=public
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
       ALCHEMY_WS_URL: ${ALCHEMY_WS_URL}
       POLYMARKET_DATA_API_BASE_URL: ${POLYMARKET_DATA_API_BASE_URL}
       POLYMARKET_CLOB_BASE_URL: ${POLYMARKET_CLOB_BASE_URL}
+      POLYMARKET_LIVE_PRIVATE_KEY: ${POLYMARKET_LIVE_PRIVATE_KEY}
     depends_on:
       db:
         condition: service_healthy
@@ -78,6 +80,7 @@ services:
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      POLYMARKET_LIVE_PRIVATE_KEY: ${POLYMARKET_LIVE_PRIVATE_KEY}
     depends_on:
       db:
         condition: service_healthy
