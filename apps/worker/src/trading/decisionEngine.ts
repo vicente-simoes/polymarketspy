@@ -39,6 +39,7 @@ import type { NormalizedBook } from "../simulate/bookUtils.js";
 import type { TradeEventGroup, CopySourceType } from "../simulate/types.js";
 
 const logger = createChildLogger({ module: "decision-engine" });
+const PAPER_MAX_SIGNAL_AGE_MS = 90_000;
 
 // ─── CopyIntent Types ──────────────────────────────────────────────────────────
 
@@ -169,6 +170,8 @@ export interface DecisionInputs {
     bookSnapshot: BookSnapshot;
     /** Resolved market ID (if available) */
     resolvedMarketId: string | null;
+    /** Current position shares in micros for this token (used for SELL bounds). */
+    currentPositionShareMicros: bigint | null;
 }
 
 // ─── Decision Engine ───────────────────────────────────────────────────────────
@@ -196,6 +199,7 @@ export function makeDecision(inputs: DecisionInputs): CopyIntent {
         isReducingExposure,
         bookSnapshot,
         resolvedMarketId,
+        currentPositionShareMicros,
     } = inputs;
 
     const effectiveTokenId = group.rawTokenId ?? group.assetId;
@@ -222,6 +226,23 @@ export function makeDecision(inputs: DecisionInputs): CopyIntent {
             [ReasonCodes.NO_LIQUIDITY_WITHIN_BOUNDS],
             null
         );
+    }
+
+    // ─── Stale Signal Guard (Paper) ──────────────────────────────────────────
+    if (mode === TradingMode.PAPER) {
+        const signalAgeMs = Date.now() - group.windowStart.getTime();
+        if (signalAgeMs > PAPER_MAX_SIGNAL_AGE_MS) {
+            log.info(
+                { signalAgeMs, maxSignalAgeMs: PAPER_MAX_SIGNAL_AGE_MS },
+                "Trade signal too old for paper execution, skipping"
+            );
+            return createSkipIntent(
+                inputs,
+                effectiveTokenId,
+                [ReasonCodes.SIGNAL_TOO_OLD],
+                null
+            );
+        }
     }
 
     // ─── Generate Idempotency Key ────────────────────────────────────────────
@@ -287,8 +308,41 @@ export function makeDecision(inputs: DecisionInputs): CopyIntent {
         guardrails
     );
 
+    // ─── Position Guard (Paper SELL) ─────────────────────────────────────────
+    let targetNotionalMicros = targetResult.targetNotionalMicros;
+    let targetShareMicros = computeTargetShares(targetNotionalMicros, group.vwapPriceMicros);
+
+    if (mode === TradingMode.PAPER && group.side === TradeSide.SELL) {
+        const availableShareMicros = currentPositionShareMicros ?? BigInt(0);
+        if (availableShareMicros <= BigInt(0)) {
+            log.info(
+                { availableShareMicros: availableShareMicros.toString() },
+                "No position available to SELL in paper mode, skipping"
+            );
+            return createSkipIntent(
+                inputs,
+                effectiveTokenId,
+                [ReasonCodes.NOT_ENOUGH_POSITION_TO_SELL],
+                null
+            );
+        }
+
+        if (targetShareMicros > availableShareMicros) {
+            targetShareMicros = availableShareMicros;
+            targetNotionalMicros =
+                (targetShareMicros * BigInt(group.vwapPriceMicros)) / BigInt(1_000_000);
+            log.info(
+                {
+                    cappedTargetShareMicros: targetShareMicros.toString(),
+                    cappedTargetNotionalMicros: targetNotionalMicros.toString(),
+                    availableShareMicros: availableShareMicros.toString(),
+                },
+                "Capped paper SELL target to available position"
+            );
+        }
+    }
+
     // ─── Simulate Fills ──────────────────────────────────────────────────────
-    const targetShareMicros = computeTargetShares(targetResult.targetNotionalMicros, group.vwapPriceMicros);
     const simulation = simulateFromNormalizedBook(
         book,
         group.side,
@@ -309,7 +363,7 @@ export function makeDecision(inputs: DecisionInputs): CopyIntent {
             spreadMicros,
             maxPriceMicros: priceBounds.maxPriceMicros,
             minPriceMicros: priceBounds.minPriceMicros,
-            targetNotionalMicros: targetResult.targetNotionalMicros.toString(),
+            targetNotionalMicros: targetNotionalMicros.toString(),
             targetShareMicros: targetShareMicros.toString(),
             rawTargetMicros: rawTargetMicros.toString(),
             clampedToMin: targetResult.clampedToMin,
@@ -357,7 +411,7 @@ export function makeDecision(inputs: DecisionInputs): CopyIntent {
         // Depth requirement
         const depthCheck = checkDepthRequirement(
             simulation.availableNotionalMicros,
-            targetResult.targetNotionalMicros,
+            targetNotionalMicros,
             guardrails
         );
         if (!depthCheck.passed) {
@@ -415,7 +469,7 @@ export function makeDecision(inputs: DecisionInputs): CopyIntent {
         {
             decision,
             reasonCodes: uniqueReasons,
-            targetNotional: targetResult.targetNotionalMicros.toString(),
+            targetNotional: targetNotionalMicros.toString(),
             filledNotional: simulation.filledNotionalMicros.toString(),
             filledRatio: simulation.filledRatioBps,
         },
@@ -433,7 +487,7 @@ export function makeDecision(inputs: DecisionInputs): CopyIntent {
         sourceType,
         tradeCount,
 
-        targetNotionalMicros: targetResult.targetNotionalMicros,
+        targetNotionalMicros: targetNotionalMicros,
         targetShareMicros,
         rawTargetMicros,
         clampedToMin: targetResult.clampedToMin,

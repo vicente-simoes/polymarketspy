@@ -528,6 +528,7 @@ export async function executeLiveCopyAttempt(
         bookSnapshot,
         resolvedMarketId,
         isReducingExposure: reducingExposure,
+        currentPositionShareMicros: null,
     });
 
     log.info(

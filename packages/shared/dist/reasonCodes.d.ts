@@ -21,6 +21,8 @@ export declare const ReasonCodes: {
     readonly NO_LIQUIDITY_WITHIN_BOUNDS: "NO_LIQUIDITY_WITHIN_BOUNDS";
     /** Market closes in < 30 minutes, no new opens allowed */
     readonly MARKET_TOO_CLOSE_TO_CLOSE: "MARKET_TOO_CLOSE_TO_CLOSE";
+    /** Trade signal is too old to execute safely */
+    readonly SIGNAL_TOO_OLD: "SIGNAL_TOO_OLD";
     /** Circuit breaker tripped (daily/weekly loss or max drawdown) */
     readonly CIRCUIT_BREAKER_TRIPPED: "CIRCUIT_BREAKER_TRIPPED";
     /** Trying to sell more shares than held */

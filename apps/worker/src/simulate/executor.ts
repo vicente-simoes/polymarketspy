@@ -212,6 +212,26 @@ async function getPortfolioState(
     };
 }
 
+async function getCurrentPositionShareMicros(
+    scope: PortfolioScope,
+    followedUserId: string | null,
+    assetId: string
+): Promise<bigint> {
+    const result = await prisma.ledgerEntry.aggregate({
+        where: {
+            tradingMode: TradingMode.PAPER,
+            portfolioScope: scope,
+            ...(scope === PortfolioScope.EXEC_GLOBAL ? {} : { followedUserId }),
+            assetId,
+        },
+        _sum: {
+            shareDeltaMicros: true,
+        },
+    });
+
+    return result._sum.shareDeltaMicros ?? BigInt(0);
+}
+
 /**
  * Options for copy attempt execution.
  */
@@ -364,6 +384,11 @@ export async function executeTradeGroup(
     // 4. Get portfolio state
     const portfolioState = await getPortfolioState(portfolioScope, followedUserId);
 
+    const currentPositionShareMicros =
+        group.side === TradeSide.SELL
+            ? await getCurrentPositionShareMicros(portfolioScope, followedUserId, effectiveTokenId)
+            : null;
+
     // 5. Resolve market ID if needed
     if (!resolvedMarketId && effectiveTokenId) {
         resolvedMarketId = await getMarketIdForToken(effectiveTokenId);
@@ -390,6 +415,7 @@ export async function executeTradeGroup(
         bookSnapshot,
         resolvedMarketId,
         isReducingExposure: reducingExposure,
+        currentPositionShareMicros,
     });
 
     const decision = toPrismaCopyDecision(intent.decision);
